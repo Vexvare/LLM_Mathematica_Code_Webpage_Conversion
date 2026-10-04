@@ -1,0 +1,34 @@
+Faults/problems:
+
+- 1. Not explicitly telling the LLM the file structure of the codebase in [2] makes the import structure incorrect (as of course, it has zero knowledge of how YOU laid it out, unless the LLM is directly integrated into the code base, which I have never done and am not willing to learn how to do so for the purposes of this project).
+- 2. Without reading through the entire code, mentions of the 'assignment' were throughout the webpage. These had to be commented out in the finalized version.
+- 3. It changed certain things without me explicitly asking for those changes to be made (i.e. in improving the look and feel of the webpage, the previous controls for the 'obstacles' were sliders, which has been changed to numerical inputs which, from a user-standpoint, is more work. 
+- 4. Some things had to be manually changed / moved around to provide a better 'feel' for the webpage. Clearly AI can not mimic true human intractability, but it doesn't do a terrible job, and even provide some headway into making those changes easier to do manually.
+- 5. When asked for a change (changing the visualization program to be directly interactable within the demonstration page) seemed to break my terminal entirely? This one was strange and required me to completely re-install my packages (particularly streamlit) twice before working properly.
+- 6. Resizing the webpage AFTER asking the visualization program to be directly interactable within the demonstration page causes the visualizations (i.e. plotly) to FREAK out and render the workspace as EXTREMELY large workspaces.
+	- This actually is requiring more changes than I had initially thought it would... curse my need for wanting to implement clean UI ease of use...
+
+What actually works:
+
+- 1. Code conversion of previous code into a rudimentary skeleton to serve as a platform to embed the existing Mathematica robotics demonstration.
+- 2. Code conversion / addition of previous code into the [1]'s skeleton worked to add a 'home page' and 'help page'.
+- 3. Planning ahead for problems in conversion Mathematica code into the python application. E.g. identifying problems ahead of time, like how Mathematica sliders will not work in Python Streamlit, and how the sliders need to be modified over into Streamlit's native application / tool base.
+- 4. Identifying clear 1:1 mapping of Mathematica tools into python tools to be used in the application.
+- 5. Identifying a testing roadmap to be used in the 'grade' as opposed to the 'websites' functionality build out.
+- 6. Cleanly identifying a 'todo' roadmap of explicit step-by-step instructions when the user (me) has gotten stuck in what to do for the next step.
+- 7. Providing the corrected the file structure of the project and informing it that the necessary code has been updated helped it by not making the same mistake of [F1].
+- 8. Worked to fully implement and build the following modules (UNTESTED AS OF WRITING THIS):
+	A. robot_model.py
+	B. visualization.py
+	C. demonstration_page.pp
+- 9. Testing of the converted code seems to work on first trial.
+
+At this point I want to improve the look and feel of the code before doing thorough testing.
+
+- 10. Providing instructions / a previous codebase's style to follow allowed for the LLM to utilize that style and adapt the webpage accordingly. Full versions of the code and individual modules were provided when asked for.
+- 11. Instructions were provided to make relevant changes to replace previous skeleton's built into the home_page.py and the help_page.py modules. 
+- 12. 
+
+Some notes / points of contingency :
+
+1 . The 'Phase Space' that was named in the Mathematica demonstration has been renamed into 'configuration space' without being explicitly asked to do so.
