@@ -380,6 +380,4 @@ This separation makes debugging and comparison with the Mathematica source subst
 
 ## License
 
-Add the license selected for this repository here.
-
-If the repository includes or redistributes source material derived from the Wolfram demonstration, make sure the repository's licensing and attribution remain compatible with the terms of the original work.
+MIT License
