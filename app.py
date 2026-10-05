@@ -1,21 +1,9 @@
-"""Main entry point for the Robot Motion with Obstacles Streamlit app.
-
-This file owns only application-level presentation and navigation:
-- page configuration
-- sidebar branding
-- Lottie animation
-- option-menu navigation
-- global styling
-- centered page framing
-- footer rendering
-
-Robotics mathematics and visualization remain isolated in the ui package.
-"""
+"""Main entry point for the Robot Motion with Obstacles Streamlit application."""
 
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 
 import streamlit as st
 from streamlit_lottie import st_lottie
@@ -27,18 +15,7 @@ from ui.help_page import display_help_page
 from ui.home_page import display_home_page
 
 
-# ---------------------------------------------------------------------------
-# Streamlit page configuration
-# ---------------------------------------------------------------------------
-
-st.set_page_config(
-    page_title="Robot Motion WIth Obstacles",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
+APP_TITLE = "Robot Motion with Obstacles"
 PAGES = ("Home", "Demonstration", "Help")
 
 PAGE_ICONS = {
@@ -47,28 +24,32 @@ PAGE_ICONS = {
     "Help": "question-circle",
 }
 
+APP_ROOT = Path(__file__).resolve().parent
+LOTTIE_PATH = APP_ROOT / "ui" / "welcome_lottie.json"
 
-# ---------------------------------------------------------------------------
-# Styling
-# ---------------------------------------------------------------------------
+
+st.set_page_config(
+    page_title=APP_TITLE,
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 
 def _inject_global_styles() -> None:
-    """Apply lightweight styling shared by all pages."""
+    """Apply styling shared by all pages."""
     st.markdown(
         """
         <style>
-            /* Main application spacing */
             .block-container {
                 padding-top: 1.8rem;
                 padding-bottom: 2.5rem;
             }
 
-            /* Sidebar spacing */
             section[data-testid="stSidebar"] > div {
                 padding-top: 1.2rem;
             }
 
-            /* Sidebar project title */
             .robot-brand {
                 text-align: center;
                 margin-top: 0.1rem;
@@ -89,19 +70,16 @@ def _inject_global_styles() -> None:
                 opacity: 0.70;
             }
 
-            /* Slightly tighter headings */
             h1, h2, h3 {
                 letter-spacing: -0.015em;
             }
 
-            /* Improve metric-card separation without fighting Streamlit theme */
             div[data-testid="stMetric"] {
                 border: 1px solid rgba(128, 128, 128, 0.18);
                 border-radius: 0.7rem;
                 padding: 0.75rem 0.9rem;
             }
 
-            /* Keep footer visually separate */
             .robot-footer {
                 margin-top: 2.5rem;
                 padding-top: 1rem;
@@ -117,23 +95,18 @@ def _inject_global_styles() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Lottie
-# ---------------------------------------------------------------------------
-
-def _load_lottie_file(filepath: str) -> dict | None:
-    """Load a local Lottie JSON file, returning None if it cannot be read."""
+def _load_lottie_file(path: Path) -> dict | None:
+    """Load a local Lottie animation if it is available."""
     try:
-        with open(filepath, "r", encoding="utf-8") as file:
+        with path.open("r", encoding="utf-8") as file:
             return json.load(file)
     except (OSError, json.JSONDecodeError):
         return None
 
 
 def _render_sidebar_lottie() -> None:
-    """Render the placeholder sidebar animation when available."""
-    lottie_path = os.path.join("ui", "welcome_lottie.json")
-    animation = _load_lottie_file(lottie_path)
+    """Render the sidebar animation when available."""
+    animation = _load_lottie_file(LOTTIE_PATH)
 
     if animation is not None:
         st_lottie(
@@ -143,12 +116,8 @@ def _render_sidebar_lottie() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Navigation
-# ---------------------------------------------------------------------------
-
 def navigate_to(page: str) -> None:
-    """Navigate programmatically from page buttons."""
+    """Navigate to one of the application's top-level pages."""
     if page not in PAGES:
         return
 
@@ -157,16 +126,13 @@ def navigate_to(page: str) -> None:
 
 
 def _initialize_navigation_state() -> None:
-    """Guarantee a valid active page."""
-    if "current_page" not in st.session_state:
-        st.session_state.current_page = "Home"
-
-    if st.session_state.current_page not in PAGES:
+    """Ensure the active page stored in session state is valid."""
+    if st.session_state.get("current_page") not in PAGES:
         st.session_state.current_page = "Home"
 
 
 def _render_sidebar() -> str:
-    """Render sidebar branding, animation, and option-menu navigation."""
+    """Render the application sidebar and return the selected page."""
     _initialize_navigation_state()
 
     with st.sidebar:
@@ -177,20 +143,19 @@ def _render_sidebar() -> str:
             <div class="robot-brand">
                 <h1>Robot Motion</h1>
                 <h1>with Obstacles</h1>
-                <p>Interactive robotics demonstration</p>
+                <p>Interactive planar robotics visualization</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
         current_page = st.session_state.current_page
-        default_index = PAGES.index(current_page)
 
         selected_page = option_menu(
             menu_title=None,
             options=list(PAGES),
             icons=[PAGE_ICONS[page] for page in PAGES],
-            default_index=default_index,
+            default_index=PAGES.index(current_page),
             styles={
                 "container": {
                     "padding": "0.35rem 0rem",
@@ -219,29 +184,20 @@ def _render_sidebar() -> str:
             st.rerun()
 
         st.markdown("---")
-        st.caption(
-            "Mathematica → Python / Streamlit\n\n"
-            "AI-assisted robotics conversion"
-        )
+        st.caption("Two-link robot motion and configuration-space exploration")
 
     return st.session_state.current_page
 
 
-# ---------------------------------------------------------------------------
-# Main content routing
-# ---------------------------------------------------------------------------
-
 def _render_page(active_page: str) -> None:
-    """Render the selected page inside a modest centered content frame."""
-    left_margin, page_content, right_margin = st.columns([0.45, 12.0, 0.45])
+    """Render the selected page in a centered content column."""
+    _, page_content, _ = st.columns([0.45, 12.0, 0.45])
 
     with page_content:
         if active_page == "Home":
             display_home_page(navigate=navigate_to)
-
         elif active_page == "Demonstration":
             display_demonstration_page()
-
         elif active_page == "Help":
             display_help_page(navigate=navigate_to)
 
@@ -249,7 +205,6 @@ def _render_page(active_page: str) -> None:
 def main() -> None:
     """Run the application."""
     _inject_global_styles()
-
     active_page = _render_sidebar()
     _render_page(active_page)
     render_footer()

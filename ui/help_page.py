@@ -1,10 +1,8 @@
-"""Help and reference page for the Robot Motion with Obstacles project."""
+"""Help and reference page for the Robot Motion with Obstacles application."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-import platform
-import sys
 
 import streamlit as st
 
@@ -28,41 +26,36 @@ GLOSSARY = {
         "The calculation used to determine the elbow and end-effector positions "
         "from θ₁ and θ₂."
     ),
+    "Inverse Kinematics": (
+        "The calculation used to determine joint angles from a desired "
+        "end-effector position."
+    ),
     "Quality (Q)": (
-        "The source demonstration's configuration-space resolution setting. "
-        "The converted high-resolution map uses 32Q samples on each angular axis."
+        "The configuration-space sampling setting. The displayed map uses "
+        "32Q samples along each angular axis."
     ),
-    "Source-compatible C-space": (
-        "The mode that preserves the second-link sign convention found in the "
-        "Mathematica configuration-space raster."
-    ),
-    "Source Locator": (
-        "The coordinate of Mathematica's original phase-space locator that "
-        "corresponds to the current θ₁ and θ₂ values."
-    ),
-    "Conversion Fault": (
-        "A missing, incorrect, inconsistent, or misleading behavior discovered "
-        "when the Streamlit conversion is compared with the source demonstration."
+    "Periodic Angles": (
+        "Joint angles repeat every 2π radians, so 0° and 360° describe the "
+        "same physical orientation."
     ),
 }
 
 
 FAQS = [
     {
-        "question": "What does this demonstration show?",
+        "question": "What does this application show?",
         "answer": (
             "It models a two-link planar robot arm moving around two circular "
             "obstacles. The workspace shows the physical robot pose, while the "
             "configuration-space plot shows which combinations of θ₁ and θ₂ "
-            "result in collision."
+            "produce collisions."
         ),
     },
     {
-        "question": "Why are the joint controls in degrees when the model uses radians?",
+        "question": "Why are the joint controls shown in degrees?",
         "answer": (
-            "Degrees are used in the interface because they are easier to read "
-            "and adjust interactively. The values are converted to radians "
-            "before the robot model performs its calculations."
+            "Degrees are easier to read and adjust interactively. The robot model "
+            "converts those values to radians internally for its calculations."
         ),
     },
     {
@@ -70,98 +63,50 @@ FAQS = [
         "answer": (
             "Yes. In the workspace you can drag either orange obstacle, the "
             "blue elbow handle, or the purple end-effector handle. In "
-            "configuration space you can drag the red marker to change θ₁ and "
-            "θ₂. The ordinary sliders remain available for precise values."
+            "configuration space you can drag the red marker to change θ₁ and θ₂."
         ),
     },
     {
-        "question": "What does the dark region in configuration space mean?",
+        "question": "What happens when I drag the end effector?",
         "answer": (
-            "Dark sampled cells represent joint configurations where the model "
-            "detects a collision between an obstacle and at least one robot link. "
-            "Light cells are sampled collision-free configurations."
+            "The application solves the two-link inverse-kinematics problem and "
+            "selects the solution closest to the robot's current pose. Targets "
+            "outside the reachable workspace are projected onto the nearest "
+            "reachable boundary."
+        ),
+    },
+    {
+        "question": "What do the dark regions in configuration space mean?",
+        "answer": (
+            "Dark cells represent sampled joint configurations where at least "
+            "one robot link intersects an obstacle. Light cells are sampled "
+            "collision-free configurations."
         ),
     },
     {
         "question": "What does Q change?",
         "answer": (
-            "Q changes the sampling resolution of the configuration-space map. "
-            "The converted high-resolution grid contains 32Q samples along each "
-            "joint-angle axis, so increasing Q produces a denser calculation."
+            "Q changes the sampling density of the configuration-space map. "
+            "Higher values produce a finer map but require more computation."
         ),
     },
     {
-        "question": "What is the source-compatible C-space option?",
+        "question": "Why might the C-space boundary look blocky?",
         "answer": (
-            "The Mathematica source draws the workspace second link using "
-            "θ₁ + θ₂, but its configuration-space raster contains an a₁ - a₂ "
-            "expression. The option preserves that source behavior rather than "
-            "silently changing it."
-        ),
-    },
-    {
-        "question": "Should I assume the conversion is correct because it looks right?",
-        "answer": (
-            "No. The assignment requires testing. Compare controls, collision "
-            "boundaries, robot poses, C-space patterns, numerical values, and "
-            "edge cases against the original Mathematica demonstration."
+            "The map is sampled on a finite grid. Increasing Q increases the "
+            "number of samples and makes the displayed collision boundary finer."
         ),
     },
 ]
-
-
-TESTING_GUIDE = [
-    "Verify the default robot pose and obstacle positions against the Mathematica demonstration.",
-    "Test θ₁ and θ₂ near 0°, 90°, 180°, 270°, and 360° and compare robot orientation.",
-    "Move each obstacle independently and verify the workspace and C-space both update.",
-    "Place an obstacle clearly on a link and confirm the application reports a collision.",
-    "Move an obstacle clearly away from both links and confirm the collision state clears.",
-    "Compare C-space patterns at several obstacle locations with the original demonstration.",
-    "Change Q from low to high values and confirm the map resolution changes without changing the underlying geometry.",
-    "Test periodic behavior near 0° and 360°.",
-    "Compare the source-compatible C-space option against the alternate sign convention.",
-    "Record successful behavior as carefully as faults; the assignment requires both.",
-]
-
-
-KNOWN_LIMITS = [
-    (
-        "The conversion now supports direct drag interaction, but a drag is "
-        "committed when the mouse is released rather than continuously "
-        "recomputing the full Python model during every pointer movement."
-    ),
-    (
-        "The Mathematica demonstration can temporarily lower C-space resolution "
-        "while a locator is actively moving; this Streamlit build commits the "
-        "drag first and then calculates the final high-resolution grid."
-    ),
-    (
-        "The source's workspace and configuration-space expressions use "
-        "different second-link angle signs. The application exposes this "
-        "difference through the source-compatible C-space option for testing."
-    ),
-    (
-        "The configuration space is sampled on a finite grid, so its displayed "
-        "collision boundary is an approximation whose visual resolution depends on Q."
-    ),
-]
-
-
-def _system_info() -> None:
-    """Display lightweight runtime information useful when reporting a problem."""
-    st.caption(
-        f"Runtime: Python {sys.version.split()[0]} • "
-        f"{platform.system()} {platform.release()}"
-    )
 
 
 def display_help_page(navigate: NavigationCallback | None = None) -> None:
-    """Render usage help, technical reference, and evaluation guidance."""
+    """Render usage help and robotics reference information."""
     st.title("Help & Reference")
-    st.caption("Using and evaluating the Robot Motion with Obstacles conversion")
+    st.caption("Using Robot Motion with Obstacles")
 
     if navigate is not None:
-        home_col, demo_col, spacer = st.columns([1, 1.2, 3.5])
+        home_col, demo_col, _ = st.columns([1, 1.2, 3.5])
 
         with home_col:
             if st.button("← Home", use_container_width=True):
@@ -179,46 +124,75 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
 
     st.subheader("Using the Demonstration")
 
-    usage_col, plot_col = st.columns(2, gap="large")
+    controls_col, plots_col = st.columns(2, gap="large")
 
-    with usage_col:
+    with controls_col:
         with st.container(border=True):
             st.markdown("### Controls")
             st.markdown(
                 """
-1. Drag an **orange obstacle** in the workspace to reposition it directly.
-2. Drag the **blue elbow ring** to change θ₁.
-3. Drag the **purple end-effector ring** to reposition the arm using inverse kinematics.
+1. Drag an **orange obstacle** to reposition it in the workspace.
+2. Drag the **blue elbow handle** to change θ₁.
+3. Drag the **purple end-effector handle** to reposition the arm using inverse kinematics.
 4. Drag the **red C-space marker** to change θ₁ and θ₂ together.
 5. Use the joint and obstacle sliders when you need exact values.
 6. Change **Q** to adjust configuration-space sampling resolution.
 7. Use the display toggles to show or hide workspace annotations.
-8. Use **Reset** to return to the source default state.
+8. Use **Reset** to return to the default state.
 """
             )
 
-    with plot_col:
+    with plots_col:
         with st.container(border=True):
             st.markdown("### Reading the Plots")
             st.markdown(
                 """
-- **Robot Workspace:** shows the arm and obstacles in Cartesian coordinates.
-- **Configuration Space:** maps joint-angle combinations to collision state.
+- **Robot Workspace:** the arm and obstacles in Cartesian coordinates.
+- **Configuration Space:** joint-angle combinations mapped to collision state.
 - **Dark C-space cells:** sampled collision configurations.
 - **Light C-space cells:** sampled collision-free configurations.
-- **Red X marker:** the robot's current configuration.
+- **Red marker:** the robot's current configuration.
 """
             )
 
     st.divider()
 
-    st.subheader("Testing Checklist")
-    for number, item in enumerate(TESTING_GUIDE, start=1):
-        st.markdown(f"{number}. {item}")
+    st.subheader("Understanding the Model")
+
+    model_left, model_right = st.columns(2, gap="large")
+
+    with model_left:
+        with st.container(border=True):
+            st.markdown("### Robot Geometry")
+            st.write(
+                "The robot has two revolute links of equal length. The second "
+                "link angle is relative to the first, so the end-effector position "
+                "depends on both θ₁ and θ₂."
+            )
+
+            st.latex(r"x_1 = \cos(\theta_1)")
+            st.latex(r"y_1 = \sin(\theta_1)")
+            st.latex(r"x_2 = x_1 + \cos(\theta_1+\theta_2)")
+            st.latex(r"y_2 = y_1 + \sin(\theta_1+\theta_2)")
+
+    with model_right:
+        with st.container(border=True):
+            st.markdown("### Collision Checking")
+            st.write(
+                "Each obstacle is treated as a circle. A collision occurs when "
+                "an obstacle center comes within the combined obstacle radius and "
+                "link half-width of either robot link segment."
+            )
+
+            st.write(
+                "The C-space plot repeats this collision test over a grid of "
+                "joint-angle pairs."
+            )
 
     st.divider()
 
     st.subheader("Frequently Asked Questions")
+
     for item in FAQS:
         with st.expander(item["question"]):
             st.write(item["answer"])
@@ -236,15 +210,14 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
 
     st.divider()
 
-    st.subheader("Known Conversion Limitations")
-    with st.expander("View current limitations", expanded=True):
-        for item in KNOWN_LIMITS:
-            st.markdown(f"- {item}")
+    st.subheader("Implementation Notes")
 
-    st.info(
-        "For the assignment report, record the exact input or control state, "
-        "what this application produced, what Mathematica produced, and why "
-        "you classified the result as correct or faulty."
-    )
-
-    _system_info()
+    with st.expander("View technical notes", expanded=False):
+        st.markdown(
+            """
+- Drag interactions are synchronized back to the Python model when the drag is committed.
+- Configuration space is sampled on a finite grid, so its visual resolution depends on **Q**.
+- The application keeps joint and obstacle sliders available alongside direct manipulation for precise input.
+- Plot navigation controls remain available for zooming, panning, and resetting the visualizations.
+"""
+        )

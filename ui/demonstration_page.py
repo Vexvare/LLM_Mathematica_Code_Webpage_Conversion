@@ -414,7 +414,7 @@ def _render_diagnostics(
     """Render detailed numerical values for comparison/testing."""
     pose = forward_kinematics(theta1, theta2)
     collision = collision_details(theta1, theta2, obstacles)
-
+    
     with st.expander("Numerical diagnostics", expanded=False):
         left, right = st.columns([1, 1.3])
 
@@ -500,12 +500,6 @@ synchronized: changing either view updates the same robot state.
 """
     )
 
-    st.info(
-        "Direct manipulation: drag an orange obstacle, the blue elbow ring, "
-        "the purple end-effector ring, or the red C-space configuration marker. "
-        "Changes are committed when you release the mouse."
-    )
-
     # ------------------------------------------------------------------
     # Controls
     # ------------------------------------------------------------------
@@ -572,18 +566,6 @@ synchronized: changing either view updates the same robot state.
     )
 
     # ------------------------------------------------------------------
-    # Current state
-    # ------------------------------------------------------------------
-    st.subheader("Current State")
-
-    _render_summary_metrics(
-        theta1=theta1,
-        theta2=theta2,
-        obstacles=obstacles,
-        quality=quality,
-    )
-
-    # ------------------------------------------------------------------
     # Directly manipulable visualizations
     # ------------------------------------------------------------------
     st.subheader("Interactive Visualization")
@@ -617,34 +599,35 @@ synchronized: changing either view updates the same robot state.
                 theta2=theta2,
                 key=CSPACE_COMPONENT_KEY,
             )
-
-    _render_diagnostics(
-        theta1=theta1,
-        theta2=theta2,
-        obstacles=obstacles,
-    )
-
-    with st.expander("Conversion notes for testing", expanded=False):
-        st.markdown(
-            """
-- **Obstacle interaction:** the orange obstacle circles are now directly
-  draggable in the workspace. The X/Y sliders remain available for exact
-  values.
-- **C-space interaction:** the red configuration handle is directly draggable
-  and updates θ₁/θ₂.
-- **Robot interaction:** dragging the blue elbow ring changes θ₁. Dragging the
-  purple end-effector ring runs planar two-link inverse kinematics and selects
-  the elbow branch closest to the current pose.
-- **Unreachable end-effector targets:** drag targets outside the reachable
-  radius are projected to the nearest reachable boundary.
-- **Periodicity:** the robot model treats both joint angles modulo `2π`.
-- **Quality Q:** the source high-resolution rule of `32Q` samples per axis is
-  preserved.
-- **Dynamic low-resolution behavior:** Mathematica temporarily uses `8Q`
-  samples while a locator is actively moving. This build commits a drag on
-  mouse release, then computes the final `32Q` grid.
-- **C-space sign convention:** the source raster uses `a₁ - a₂` for the second
-  link even though the workspace drawing uses `θ₁ + θ₂`. The source-compatible
-  toggle preserves that behavior for comparison.
-"""
+    c1, c2 = st.columns([1,1])
+    with c1:
+        _render_diagnostics(
+            theta1=theta1,
+            theta2=theta2,
+            obstacles=obstacles,
         )
+    with c2:
+        with st.expander("Conversion notes for testing", expanded=False):
+            st.markdown(
+                """
+                - **Obstacle interaction:** the orange obstacle circles are now directly
+                draggable in the workspace. The X/Y sliders remain available for exact
+                values.
+                - **C-space interaction:** the red configuration handle is directly draggable
+                and updates θ₁/θ₂.
+                - **Robot interaction:** dragging the blue elbow ring changes θ₁. Dragging the
+                purple end-effector ring runs planar two-link inverse kinematics and selects
+                the elbow branch closest to the current pose.
+                - **Unreachable end-effector targets:** drag targets outside the reachable
+                radius are projected to the nearest reachable boundary.
+                - **Periodicity:** the robot model treats both joint angles modulo `2π`.
+                - **Quality Q:** the source high-resolution rule of `32Q` samples per axis is
+                preserved.
+                - **Dynamic low-resolution behavior:** Mathematica temporarily uses `8Q`
+                samples while a locator is actively moving. This build commits a drag on
+                mouse release, then computes the final `32Q` grid.
+                - **C-space sign convention:** the source raster uses `a₁ - a₂` for the second
+                link even though the workspace drawing uses `θ₁ + θ₂`. The source-compatible
+                toggle preserves that behavior for comparison.
+                """
+                )

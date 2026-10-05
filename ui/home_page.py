@@ -1,4 +1,4 @@
-"""Landing page for the Robot Motion with Obstacles project."""
+"""Landing page for the Robot Motion with Obstacles application."""
 
 from __future__ import annotations
 
@@ -11,20 +11,16 @@ NavigationCallback = Callable[[str], None]
 
 
 def display_home_page(navigate: NavigationCallback | None = None) -> None:
-    """Render the application's landing page."""
+    """Render the public landing page."""
     st.title("Robot Motion with Obstacles")
-    st.caption("Mathematica → Python / Streamlit")
+    st.caption("Interactive two-link planar robot visualization")
 
     st.markdown(
         """
-This application is an AI-assisted conversion of the Wolfram Demonstrations
-Project example **Robot Motion with Obstacles** into an interactive Python /
-Streamlit application.
-
-The converted demonstration models a two-link planar robot arm moving around
-two circular obstacles. It displays both the robot's physical workspace and
-the corresponding two-dimensional configuration space, where collision and
-collision-free joint configurations can be explored interactively.
+Explore the motion of a **two-link planar robot arm** moving among circular
+obstacles. The application connects the robot's physical workspace with its
+two-dimensional **configuration space (C-space)** so you can see how joint
+angles, obstacle placement, and collisions relate to one another.
 """
     )
 
@@ -36,9 +32,8 @@ collision-free joint configurations can be explored interactively.
         with st.container(border=True):
             st.subheader("🤖 Interactive Demonstration")
             st.write(
-                "Adjust both robot joints, move the obstacle centers, change "
-                "configuration-space quality, and compare the workspace with "
-                "the generated collision map."
+                "Move the robot, reposition obstacles, adjust configuration-space "
+                "resolution, and watch the workspace and C-space update together."
             )
 
             if navigate is not None and st.button(
@@ -50,11 +45,10 @@ collision-free joint configurations can be explored interactively.
 
     with help_col:
         with st.container(border=True):
-            st.subheader("📘 Help & Evaluation")
+            st.subheader("📘 Help & Reference")
             st.write(
-                "Review how the controls work, what the visualizations mean, "
-                "known conversion differences, and a checklist for testing the "
-                "AI-generated implementation."
+                "Learn how to use the controls, interpret the plots, and understand "
+                "the robotics concepts behind the visualization."
             )
 
             if navigate is not None and st.button(
@@ -64,61 +58,62 @@ collision-free joint configurations can be explored interactively.
                 navigate("Help")
 
     st.divider()
-    c1, c2 = st.columns([1,1])
-    with c1:
-        st.subheader("What the Application Contains")
 
-        workspace_col, cspace_col, testing_col = st.columns(3, gap="medium")
+    st.subheader("What You Can Explore")
 
-        with workspace_col:
-            st.markdown("#### Workspace")
+    workspace_col, cspace_col, interaction_col = st.columns(3, gap="medium")
+
+    with workspace_col:
+        with st.container(border=True):
+            st.markdown("### Workspace")
             st.write(
-                "A Cartesian view of the two-link robot, its revolute joints, "
-                "end effector, and the two circular obstacles."
+                "View the robot in Cartesian space, including its base, elbow, "
+                "end effector, and circular obstacles."
             )
 
-        with cspace_col:
-            st.markdown("#### Configuration Space")
+    with cspace_col:
+        with st.container(border=True):
+            st.markdown("### Configuration Space")
             st.write(
-                "A sampled map over θ₁ and θ₂ showing which robot configurations "
-                "produce obstacle collisions."
+                "Explore a sampled map over θ₁ and θ₂ showing collision-free "
+                "and colliding robot configurations."
             )
 
-        with testing_col:
-            st.markdown("#### Evaluation Tools")
+    with interaction_col:
+        with st.container(border=True):
+            st.markdown("### Direct Manipulation")
             st.write(
-                "Collision status, end-effector coordinates, source-locator "
-                "coordinates, link-to-obstacle distances, and conversion notes."
+                "Drag obstacles, the robot elbow, the end effector, and the "
+                "configuration-space marker directly in the visualizations."
             )
 
+    st.divider()
 
+    st.subheader("Key Capabilities")
 
-    with c2:
-        st.subheader("Project Build Workflow")
+    left, right = st.columns(2, gap="large")
 
-        convert_col, test_col, evaluate_col = st.columns(3)
+    with left:
+        st.markdown(
+            """
+- Forward kinematics for a two-link planar manipulator
+- Inverse kinematics for end-effector dragging
+- Link-to-obstacle collision detection
+- Periodic joint-angle handling
+"""
+        )
 
-        with convert_col:
-            st.markdown("#### 1. Convert")
-            st.write(
-                "Translate the Mathematica controls, robot geometry, collision "
-                "logic, and configuration-space visualization into Python."
-            )
+    with right:
+        st.markdown(
+            """
+- Interactive Plotly workspace and C-space views
+- Adjustable configuration-space sampling quality
+- Precise joint and obstacle sliders
+- Numerical diagnostics for robot state and geometry
+"""
+        )
 
-        with test_col:
-            st.markdown("#### 2. Test")
-            st.write(
-                "Exercise the converted controls and compare numerical and visual "
-                "behavior against the original demonstration."
-            )
-
-        with evaluate_col:
-            st.markdown("#### 3. Evaluate")
-            st.write(
-                "Document what works correctly as well as faults, missing "
-                "functionality, interface differences, and mathematical errors."
-            )
-
-    st.success(
-        "The interactive conversion is now implemented and ready for systematic testing."
+    st.info(
+        "Tip: use the draggable plot handles for exploration and the sliders "
+        "when you need exact, repeatable values."
     )
