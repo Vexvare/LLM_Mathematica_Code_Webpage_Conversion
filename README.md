@@ -4,6 +4,10 @@ An interactive **Python / Streamlit** visualization of a two-link planar robot m
 
 The application connects the robot's Cartesian workspace with its two-dimensional **configuration space (C-space)**, making it possible to explore robot motion, obstacle collisions, forward kinematics, and inverse kinematics interactively.
 
+## Live Demo
+
+[Launch Robot Motion with Obstacles](https://2-link-robot-motion-with-obstacles.streamlit.app/)
+
 ## Features
 
 - Two-link planar robot arm

@@ -38,7 +38,7 @@ Refactor 1: At this point I want to improve the look and feel of the code before
 
 Refactor 2: After this functionality was implemented, I decided to make an attempt to better the UI and functionality (once again) to match my partner's clean UI.
 
-- 11. When asked to match my project partner's simple and clean graphical implementation, the AI provided a plan and quickly adapted the code to match his implementation (namely, updating UI plot elements immediately when dragging the plot's objects around). This was met with Fault 7 [F7]
+- 13. When asked to match my project partner's simple and clean graphical implementation, the AI provided a plan and quickly adapted the code to match his implementation (namely, updating UI plot elements immediately when dragging the plot's objects around). This was met with Fault 7 [F7]
 
 
 Some notes / points of contingency :
@@ -47,4 +47,5 @@ Some notes / points of contingency :
 2. The models would make a LOT of assumptions when building the code-base, such as adding 'diagnostics' and 'numerical details' without being explicitly asked to do so. This could be a remnant of my previous webpage serving as the skeleton for this project.
 3. A lot of the code needed to be refactored to have clean optimization and implementation. This was done a maximum (6) times for some modules.
 4. A "source_compatible" toggle was added that basically preserved the sign convention for the original program, despite never asking for this. This was removed in the final version of the program.
+5. When deploying the app, there was some issues/confusion that the LLM made when stating that the repository could be private for it to be deployed, but this is only true if certain account settings are changed for GIT to allow native access by streamlit into the users repositories. Needless to say, I decided to just make the repository public and avoid all of that headache.
 
