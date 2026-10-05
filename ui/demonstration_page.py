@@ -45,7 +45,6 @@ def _initialize_state() -> None:
         "demo_obstacle2_x": float(DEFAULT_OBSTACLES[1][0]),
         "demo_obstacle2_y": float(DEFAULT_OBSTACLES[1][1]),
         "demo_quality": DEFAULT_QUALITY,
-        "demo_source_compatible": True,
         "demo_show_angle_arcs": True,
         "demo_show_labels": True,
     }
@@ -67,7 +66,6 @@ def _reset_demo() -> None:
     st.session_state.demo_obstacle2_y = float(DEFAULT_OBSTACLES[1][1])
 
     st.session_state.demo_quality = DEFAULT_QUALITY
-    st.session_state.demo_source_compatible = True
     st.session_state.demo_show_angle_arcs = True
     st.session_state.demo_show_labels = True
 
@@ -210,7 +208,7 @@ def _obstacle_control_card(
     return float(x), float(y)
 
 
-def _model_settings_card() -> tuple[int, bool, bool, bool]:
+def _model_settings_card() -> tuple[int, bool, bool]:
     """Render configuration-space and display settings."""
     with st.container(border=True):
         st.markdown("### ⚙️ Model Settings")
@@ -231,17 +229,6 @@ def _model_settings_card() -> tuple[int, bool, bool, bool]:
             f"Final: {final_resolution} × {final_resolution}"
         )
 
-        source_compatible = st.toggle(
-            "Wolfram C-space convention",
-            value = False,
-            key="demo_source_compatible",
-            help=(
-                "Preserves the second-link sign convention used by the "
-                "original Wolfram configuration-space raster."
-            ),
-            
-        )
-
         toggle_col1, toggle_col2 = st.columns(2)
 
         with toggle_col1:
@@ -258,7 +245,6 @@ def _model_settings_card() -> tuple[int, bool, bool, bool]:
 
     return (
         int(quality),
-        bool(source_compatible),
         bool(show_angle_arcs),
         bool(show_labels),
     )
@@ -406,7 +392,7 @@ synchronized.
     obstacles = (obstacle1, obstacle2)
 
     quality = int(st.session_state.demo_quality)
-    source_compatible = bool(st.session_state.demo_source_compatible)
+    source_compatible = False
     show_angle_arcs = bool(st.session_state.demo_show_angle_arcs)
     show_labels = bool(st.session_state.demo_show_labels)
 
@@ -415,7 +401,6 @@ synchronized.
         theta2=theta2,
         obstacles=obstacles,
         quality=quality,
-        source_compatible=source_compatible,
         show_angle_arcs=show_angle_arcs,
         show_labels=show_labels,
         key=INTERACTION_COMPONENT_KEY,
@@ -454,10 +439,11 @@ synchronized.
     with settings_col:
         (
             quality,
-            source_compatible,
             show_angle_arcs,
             show_labels,
         ) = _model_settings_card()
+
+        source_compatible = False
 
     obstacles = (obstacle1, obstacle2)
 

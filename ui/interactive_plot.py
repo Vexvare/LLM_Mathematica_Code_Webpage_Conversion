@@ -1468,7 +1468,6 @@ def render_interactive_robot_system(
     theta2: float,
     obstacles: Iterable[Iterable[float]],
     quality: int,
-    source_compatible: bool,
     show_angle_arcs: bool,
     show_labels: bool,
     key: str,
@@ -1487,7 +1486,7 @@ def render_interactive_robot_system(
             "theta2": float(theta2),
             "obstacles": obstacle_array.tolist(),
             "quality": int(quality),
-            "source_compatible": bool(source_compatible),
+            "source_compatible": False,
             "show_angle_arcs": bool(show_angle_arcs),
             "show_labels": bool(show_labels),
             "geometry": {

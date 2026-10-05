@@ -3,6 +3,11 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.streamlit/secrets.toml
+.mypy_cache/
+.coverage
+htmlcov/
 .DS_Store
 Thumbs.db
+
+# Streamlit secrets should never be committed.
+.streamlit/secrets.toml

@@ -5,8 +5,15 @@ Faults/problems:
 - 3. It changed certain things without me explicitly asking for those changes to be made (i.e. in improving the look and feel of the webpage, the previous controls for the 'obstacles' were sliders, which has been changed to numerical inputs which, from a user-standpoint, is more work. 
 - 4. Some things had to be manually changed / moved around to provide a better 'feel' for the webpage. Clearly AI can not mimic true human intractability, but it doesn't do a terrible job, and even provide some headway into making those changes easier to do manually.
 - 5. When asked for a change (changing the visualization program to be directly interactable within the demonstration page) seemed to break my terminal entirely? This one was strange and required me to completely re-install my packages (particularly streamlit) twice before working properly.
+
+Refactor 1:
+
 - 6. Resizing the webpage AFTER asking the visualization program to be directly interactable within the demonstration page causes the visualizations (i.e. plotly) to FREAK out and render the workspace as EXTREMELY large workspaces.
 	- This actually is requiring more changes than I had initially thought it would... curse my need for wanting to implement clean UI ease of use...
+
+Refactor 2: 
+
+- 7. Updating the UI for the second time to immediately update plot elements on change led to a BidiComponent Error bug that was fixed when providing detailed bug-information to the LLM.
 
 What actually works:
 
@@ -23,13 +30,21 @@ What actually works:
 	C. demonstration_page.pp
 - 9. Testing of the converted code seems to work on first trial.
 
-At this point I want to improve the look and feel of the code before doing thorough testing.
+Refactor 1: At this point I want to improve the look and feel of the code before doing thorough testing.
 
 - 10. Providing instructions / a previous codebase's style to follow allowed for the LLM to utilize that style and adapt the webpage accordingly. Full versions of the code and individual modules were provided when asked for.
 - 11. Instructions were provided to make relevant changes to replace previous skeleton's built into the home_page.py and the help_page.py modules. 
-- 12. 
+- 12. After working through Fault 6 [F6] to implement the visualization program to be directly interactable, once the bugs were smoothed out it was able to be interacted with properly.
+
+Refactor 2: After this functionality was implemented, I decided to make an attempt to better the UI and functionality (once again) to match my partner's clean UI.
+
+- 11. When asked to match my project partner's simple and clean graphical implementation, the AI provided a plan and quickly adapted the code to match his implementation (namely, updating UI plot elements immediately when dragging the plot's objects around). This was met with Fault 7 [F7]
 
 
 Some notes / points of contingency :
 
-1 . The 'Phase Space' that was named in the Mathematica demonstration has been renamed into 'configuration space' without being explicitly asked to do so.
+1. The 'Phase Space' that was named in the Mathematica demonstration has been renamed into 'configuration space' without being explicitly asked to do so.
+2. The models would make a LOT of assumptions when building the code-base, such as adding 'diagnostics' and 'numerical details' without being explicitly asked to do so. This could be a remnant of my previous webpage serving as the skeleton for this project.
+3. A lot of the code needed to be refactored to have clean optimization and implementation. This was done a maximum (6) times for some modules.
+4. A "source_compatible" toggle was added that basically preserved the sign convention for the original program, despite never asking for this. This was removed in the final version of the program.
+

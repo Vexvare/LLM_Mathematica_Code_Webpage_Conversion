@@ -1,79 +1,97 @@
 # Robot Motion with Obstacles
 
-An interactive **Python / Streamlit** recreation of the Wolfram Demonstrations Project example **Robot Motion with Obstacles**.
+An interactive **Python / Streamlit** visualization of a two-link planar robot moving among circular obstacles.
 
-This project was created for a robotics course assignment focused on converting an existing Mathematica demonstration into a web application with the assistance of an AI coding tool. The goal is not only to reproduce the original behavior, but also to make the conversion easy to test, inspect, and evaluate.
+The application connects the robot's Cartesian workspace with its two-dimensional **configuration space (C-space)**, making it possible to explore robot motion, obstacle collisions, forward kinematics, and inverse kinematics interactively.
 
 ## Features
 
 - Two-link planar robot arm
 - Forward kinematics
-- Two circular obstacles
-- Robot/obstacle collision detection
-- Sampled configuration-space (C-space) collision map
-- Adjustable configuration-space quality
-- Direct manipulation of:
-  - Obstacle 1
-  - Obstacle 2
-  - Robot elbow
-  - Robot end effector
-  - Current C-space configuration
 - Inverse kinematics for end-effector dragging
-- Exact slider controls for repeatable testing
-- Workspace and C-space visualizations rendered with Plotly
-- Streamlit-based interface with sidebar navigation
-- Lottie animation support
-- Numerical diagnostics for validating the conversion
+- Two draggable circular obstacles
+- Link-to-obstacle collision detection
+- Interactive configuration-space collision map
+- Draggable C-space crosshair for direct robot control
+- Draggable elbow and end-effector controls
+- Exact sliders for joint angles and obstacle positions
+- Adjustable configuration-space quality
+- Numerical robot-state and collision diagnostics
+- Responsive browser-side interaction for smooth dragging
+- Streamlit navigation and user interface
+
+## Interactive Performance
+
+The workspace and configuration-space views share one browser-side interaction component.
+
+During interaction:
+
+- Moving the **C-space crosshair** updates the robot immediately in the browser.
+- Dragging the **elbow** or **end effector** updates the robot continuously.
+- Dragging an **obstacle** recomputes a lower-resolution `8Q × 8Q` C-space preview.
+- When an obstacle drag ends, the final map is recomputed at `32Q × 32Q`.
+- The committed state is then synchronized back to Streamlit/Python.
+
+This keeps direct manipulation responsive while retaining the Python robot model for application state, diagnostics, and independent calculations.
 
 ## Project Structure
 
 ```text
-robot-motion-streamlit/
-│
+robot-motion-with-obstacles/
 ├── app.py
 ├── requirements.txt
+├── README.md
 │
 ├── ui/
 │   ├── home_page.py
 │   ├── help_page.py
 │   ├── demonstration_page.py
 │   ├── robot_model.py
-│   ├── visualization.py
 │   ├── interactive_plot.py
+│   ├── visualization.py
 │   ├── footer.py
 │   └── welcome_lottie.json
 │
-├── tests/
-│   └── test_robot_model.py
-│
-└── reference/
-    └── Demonstration-Robot-Motion-with-Obstacles-1-0-0-definition.nb
+└── tests/
+    └── test_robot_model.py
 ```
+
+`visualization.py` contains standalone Plotly visualization utilities. The main live demonstration uses the browser-side canvas interaction implemented in `interactive_plot.py`.
 
 ## Requirements
 
-- Python 3.10 or newer recommended
+- Python 3.10 or newer
 - pip
 - A modern web browser
 
-The project dependencies are listed in `requirements.txt`.
+The application dependencies are listed in `requirements.txt`.
 
-The interactive Plotly component requires **Streamlit 1.51 or newer**.
+The custom Streamlit component requires:
 
-## Installation
+```text
+Streamlit >= 1.51 and < 2
+```
+
+For deployment, use the same Python version that you use successfully during local development.
+
+Check your version with:
+
+```bash
+python --version
+```
+
+## Local Installation
 
 ### 1. Clone the repository
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
-cd robot-motion-streamlit
+cd <YOUR_REPOSITORY_DIRECTORY>
 ```
-
-Replace `<YOUR_REPOSITORY_URL>` with the URL of your GitHub repository.
 
 ### 2. Create a virtual environment
 
-Creating a virtual environment is strongly recommended.
+A virtual environment is recommended.
 
 #### Windows PowerShell
 
@@ -96,16 +114,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install dependencies
+### 3. Install application dependencies
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Using `python -m pip` helps ensure the packages are installed into the same Python environment that will run the application.
-
-## Running the Application
+### 4. Run the application
 
 From the repository root:
 
@@ -113,70 +129,76 @@ From the repository root:
 python -m streamlit run app.py
 ```
 
-Streamlit should open the application automatically in your browser.
+Streamlit will normally open the application automatically.
 
-If it does not, the terminal will display a local URL, usually similar to:
+If it does not, open the local address shown in the terminal, usually:
 
 ```text
 http://localhost:8501
 ```
 
-Open that address manually in your browser.
-
-> `python -m streamlit run app.py` is recommended instead of `streamlit run app.py` because it avoids problems caused by stale or mismatched Streamlit launchers on the system PATH.
+Using `python -m streamlit` ensures Streamlit runs from the same Python environment in which the dependencies were installed.
 
 ## Using the Demonstration
 
 Open **Demonstration** from the sidebar.
 
-### Robot controls
+### Workspace
 
-The robot has two revolute joints:
+The workspace shows the robot in Cartesian coordinates.
 
-- `θ1` — first joint angle
-- `θ2` — second joint angle
-
-The sliders use degrees for easier interaction, while the internal model performs the calculations in radians.
-
-### Direct manipulation
-
-The workspace supports direct interaction:
+You can:
 
 - Drag **Obstacle 1**
 - Drag **Obstacle 2**
-- Drag the **elbow handle** to change `θ1`
-- Drag the **end-effector handle** to reposition the arm using inverse kinematics
+- Drag the **blue elbow handle** to change `θ₁`
+- Drag the **purple end-effector handle** to reposition the robot using inverse kinematics
 
-The configuration-space visualization also includes a draggable marker that changes `θ1` and `θ2`.
+### Configuration Space
 
-The sliders remain available for exact and repeatable test values.
+The C-space view maps joint-angle pairs `(θ₁, θ₂)` to collision state.
 
-### Configuration-space quality
+- Dark cells represent sampled collision configurations.
+- Light cells represent sampled collision-free configurations.
+- The red crosshair represents the current robot configuration.
+- Click or drag the crosshair to move the robot directly.
 
-The `Q` control changes the sampling resolution of the collision map.
+### Precise Controls
 
-The high-resolution configuration-space grid uses:
+The sliders beneath the visualization can be used when exact, repeatable values are preferred.
+
+The interface uses degrees for readability while the internal robot model performs its angular calculations in radians.
+
+## Configuration-Space Quality
+
+The `Q` control changes the C-space sampling resolution.
+
+While an obstacle is being dragged, the live preview uses:
+
+```text
+resolution = 8 × Q
+```
+
+After the drag is committed, the final map uses:
 
 ```text
 resolution = 32 × Q
 ```
 
-samples along each angular axis.
+Examples of final resolution:
 
-For example:
-
-| Q | Grid size |
+| Q | Final grid |
 |---:|---:|
 | 1 | 32 × 32 |
 | 2 | 64 × 64 |
 | 5 | 160 × 160 |
 | 10 | 320 × 320 |
 
-Higher values provide a finer collision map but require more computation.
+Higher values produce a finer sampled collision map but require more computation.
 
 ## Mathematical Model
 
-The robot is a two-link planar manipulator.
+The robot is a planar two-revolute-joint manipulator with equal link lengths.
 
 For link length `L = 1`:
 
@@ -188,37 +210,46 @@ x2 = x1 + L cos(θ1 + θ2)
 y2 = y1 + L sin(θ1 + θ2)
 ```
 
-The model also includes:
+The model also implements:
 
-- point-to-line-segment distance
-- link/obstacle collision detection
 - periodic joint-angle handling
-- inverse kinematics
+- point-to-line-segment distance
+- robot-link collision detection
 - sampled C-space generation
+- two-branch planar inverse kinematics
+- nearest-branch selection for smooth end-effector dragging
 
-The robot model is intentionally separated from the Streamlit interface in:
+The mathematical model is kept in:
 
 ```text
 ui/robot_model.py
 ```
 
-This makes the mathematics easier to test independently from the web interface.
+and does not depend on Streamlit or browser rendering.
 
-## Visualization Architecture
+## Architecture
 
-The project separates the application into three major layers:
+The application separates the robotics model from the user interface and browser interaction layer:
 
 ```text
-Streamlit interface
-        ↓
-robot_model.py
-        ↓
-visualization.py / interactive_plot.py
+Streamlit application
+        │
+        ├── page layout / controls / session state
+        │
+        ├── Python robot model
+        │
+        └── browser interaction component
+                    │
+                    ├── workspace rendering
+                    ├── C-space rendering
+                    ├── direct dragging
+                    ├── live inverse kinematics
+                    └── live C-space preview
 ```
 
 ### `robot_model.py`
 
-Contains the robotics mathematics:
+Contains the Python robotics model:
 
 - forward kinematics
 - inverse kinematics
@@ -226,158 +257,140 @@ Contains the robotics mathematics:
 - angle wrapping
 - configuration-space generation
 
-### `visualization.py`
-
-Builds the Plotly figures:
-
-- robot workspace
-- configuration-space heatmap
-
 ### `interactive_plot.py`
 
-Adds direct drag interaction over the Plotly figures.
+Contains the high-speed browser interaction layer.
 
-The draggable interaction layer is synchronized with Plotly's coordinate system so that the draggable objects remain attached to the correct robot/workspace coordinates while the page is resized.
+The workspace and C-space are rendered together so both views can update during a pointer drag without waiting for a Streamlit rerun.
 
-## Testing
+### `demonstration_page.py`
 
-The assignment requires evaluating both what the AI-generated conversion gets **right** and what it gets **wrong**.
+Coordinates Streamlit state, exact controls, the interactive component, and numerical diagnostics.
 
-Recommended tests include:
+## Tests
 
-1. Compare the default robot pose against the original Mathematica demonstration.
-2. Test `θ1` and `θ2` at:
-   - 0°
-   - 90°
-   - 180°
-   - 270°
-   - 360°
-3. Move each obstacle independently.
-4. Place an obstacle directly on a robot link and verify that collision is detected.
-5. Move an obstacle away from the arm and verify that the collision clears.
-6. Compare the C-space pattern against the Mathematica source.
-7. Test several values of `Q`.
-8. Test periodic behavior near 0° / 360°.
-9. Compare slider-controlled and drag-controlled motion.
-10. Record both successful behavior and faults.
+If you install the development dependencies:
 
-If automated tests are included, run:
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+run the automated tests with:
 
 ```bash
 python -m pytest
 ```
 
-## Known Conversion Differences
+Useful manual checks include:
 
-The Streamlit version is designed to reproduce the source demonstration closely, but it is not a byte-for-byte or UI-for-UI translation of Mathematica.
+1. Move the C-space crosshair and verify the robot follows continuously.
+2. Drag each obstacle and verify the C-space preview updates during motion.
+3. Release an obstacle and verify the final higher-resolution C-space appears.
+4. Place an obstacle on a robot link and verify collision detection.
+5. Drag the end effector around the reachable workspace.
+6. Compare slider-controlled and drag-controlled values.
+7. Test periodic joint behavior near `0°` and `360°`.
 
-Important differences include:
+## Deploying on Streamlit Community Cloud
 
-- Mathematica uses native `Locator` controls.
-- This project recreates direct manipulation through a custom Streamlit interaction layer.
-- Drag changes are synchronized back to Python after the interaction event.
-- Streamlit and Plotly use a web-based rendering model rather than Mathematica's notebook graphics system.
-- The original Mathematica code uses a different second-link sign convention in part of the C-space calculation than in the workspace visualization. The project preserves a source-compatible option so that this behavior can be tested rather than silently changed.
-- C-space is sampled on a finite grid, so collision boundaries depend visually on `Q`.
+This repository is structured for deployment directly from GitHub.
 
-These differences are useful observations for the evaluation portion of the assignment.
+Before deploying:
+
+1. Make sure `app.py` and `requirements.txt` are in the repository root.
+2. Push the latest working version to GitHub.
+3. Confirm the application runs locally with:
+
+   ```bash
+   python -m streamlit run app.py
+   ```
+
+4. Note your local Python version:
+
+   ```bash
+   python --version
+   ```
+
+Then deploy through [Streamlit Community Cloud](https://share.streamlit.io/):
+
+1. Sign in and connect your GitHub account.
+2. Select **Create app**.
+3. Choose the GitHub repository.
+4. Select the branch you want to deploy, normally `main`.
+5. Set the entrypoint to:
+
+   ```text
+   app.py
+   ```
+
+6. Choose a memorable `streamlit.app` subdomain if desired.
+7. Open **Advanced settings** and select the same Python version used locally.
+8. Deploy the application.
+
+Community Cloud installs the dependencies from the repository's `requirements.txt` and launches the Streamlit entrypoint.
+
+After deployment, add the live Streamlit URL near the top of this README.
 
 ## Source Demonstration
 
-This project is based on:
+This application is based on:
 
 **Robot Motion with Obstacles**  
-Wolfram Demonstrations Project  
-Aaron T. Becker and Haoran Zhao
+by **Aaron T. Becker** and **Haoran Zhao**  
+Wolfram Demonstrations Project
 
-Reference page:
+Original demonstration:
 
-```text
 https://demonstrations.wolfram.com/RobotMotionWithObstacles/
-```
 
-The original Mathematica notebook is included only as reference material for the conversion and testing process.
-
-## Attribution and Project Scope
-
-This repository contains a Python/Streamlit implementation created specifically for the robotics conversion assignment.
-
-The application structure, Python implementation, Streamlit interface, interaction layer, and testing utilities are separate from the original Mathematica notebook.
-
-When distributing or publishing the project, retain appropriate attribution to the original Wolfram Demonstrations Project example and follow the licensing terms that apply to the original source material.
+The original work remains attributable to its authors and the Wolfram Demonstrations Project.
 
 ## Troubleshooting
 
-### `streamlit` command fails but Streamlit is installed
+### Streamlit is installed but the command is not found
 
-Check the installed version:
+Use:
 
 ```bash
 python -m streamlit --version
-```
-
-Then launch with:
-
-```bash
 python -m streamlit run app.py
 ```
 
-If necessary, reinstall dependencies:
+### The application does not reflect recent code changes
 
-```bash
-python -m pip install -r requirements.txt
-```
-
-### Interactive plots do not appear
-
-Verify that Streamlit is current enough:
-
-```bash
-python -m streamlit --version
-```
-
-The project requires Streamlit 1.51 or newer for the custom interactive component.
-
-Then restart Streamlit completely.
-
-### Changes to Python files do not appear
-
-Stop the server:
+Stop Streamlit with:
 
 ```text
 Ctrl+C
 ```
 
-and restart it:
+then restart it:
 
 ```bash
 python -m streamlit run app.py
 ```
 
-### Configuration-space updates are slow
+For a deployed app, verify that your changes were committed and pushed to the branch used by Community Cloud.
+
+### A Community Cloud build fails
+
+Check the deployment logs first.
+
+Common causes include:
+
+- a missing package in `requirements.txt`
+- a Python-version mismatch between local development and deployment
+- filename or path capitalization that works on Windows but fails on Linux
+- a required local asset that was not committed to GitHub
+
+### C-space interaction is slow
 
 Lower `Q`.
 
-A value of:
-
-```text
-Q = 2
-```
-
-produces a `64 × 64` grid and is a good default for interactive use.
-
-## Development Notes
-
-When modifying the project, keep responsibilities separated:
-
-- robotics math → `robot_model.py`
-- static Plotly construction → `visualization.py`
-- direct browser interaction → `interactive_plot.py`
-- Streamlit page layout/state → `demonstration_page.py`
-- top-level routing → `app.py`
-
-This separation makes debugging and comparison with the Mathematica source substantially easier.
+`Q = 2` gives a final `64 × 64` grid and is a good interactive default.
 
 ## License
 
-MIT License
+The Python/Streamlit implementation in this repository is licensed under the **MIT License**.
+
+The original **Robot Motion with Obstacles** demonstration is credited separately above and remains subject to the terms applicable to the original Wolfram Demonstrations Project material.

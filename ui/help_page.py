@@ -94,14 +94,6 @@ FAQS = [
             "ends, the final map uses 32Q samples per axis."
         ),
     },
-    {
-        "question": "What is the Wolfram C-space convention toggle?",
-        "answer": (
-            "The original Wolfram implementation uses a different second-link "
-            "sign convention in its configuration-space raster than in its "
-            "workspace drawing. The toggle preserves that source behavior."
-        ),
-    },
 ]
 
 
