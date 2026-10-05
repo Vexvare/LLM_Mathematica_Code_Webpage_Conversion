@@ -1,84 +1,42 @@
-"""Interactive Streamlit page for Robot Motion with Obstacles.
-
-This version supports direct manipulation inside the Plotly visualizations:
-
-Workspace
----------
-* drag obstacle 1
-* drag obstacle 2
-* drag the elbow to change theta1
-* drag the end effector to solve inverse kinematics
-
-Configuration space
--------------------
-* drag the current-configuration marker to change theta1/theta2
-
-The sliders remain available as precise, accessible fallback controls.
-"""
+"""Interactive demonstration page for Robot Motion with Obstacles."""
 
 from __future__ import annotations
 
-from math import atan2, degrees, radians
+from math import degrees, radians
 
 import streamlit as st
 
-from ui.interactive_plot import (
-    render_draggable_configuration_space,
-    render_draggable_workspace,
-)
+from ui.interactive_plot import render_interactive_robot_system
 from ui.robot_model import (
     DEFAULT_OBSTACLES,
     QUALITY_MAX,
     QUALITY_MIN,
     TWO_PI,
-    angles_to_phase_locator,
     collision_details,
-    configuration_space,
     forward_kinematics,
-    inverse_kinematics,
     phase_locator_to_angles,
     wrap_angle,
-)
-from ui.visualization import (
-    create_configuration_space_figure,
-    create_workspace_figure,
 )
 
 
 DEFAULT_QUALITY = 2
 DEFAULT_PHASE_LOCATOR = (5.0, 0.0)
+
 _DEFAULT_THETA1_RAD, _DEFAULT_THETA2_RAD = phase_locator_to_angles(
     *DEFAULT_PHASE_LOCATOR
 )
+
 DEFAULT_THETA1_DEG = degrees(_DEFAULT_THETA1_RAD)
 DEFAULT_THETA2_DEG = degrees(_DEFAULT_THETA2_RAD)
 
 OBSTACLE_STEP = 0.05
 
-WORKSPACE_COMPONENT_KEY = "workspace_drag_component"
-CSPACE_COMPONENT_KEY = "cspace_drag_component"
-
-WORKSPACE_EVENT_NONCE_KEY = "_last_workspace_drag_nonce"
-CSPACE_EVENT_NONCE_KEY = "_last_cspace_drag_nonce"
-
-
-@st.cache_data(show_spinner=False)
-def _cached_configuration_space(
-    obstacle_1: tuple[float, float],
-    obstacle_2: tuple[float, float],
-    quality: int,
-    source_compatible: bool,
-):
-    """Cache the expensive C-space map independently from the current pose."""
-    return configuration_space(
-        obstacles=(obstacle_1, obstacle_2),
-        quality=quality,
-        source_compatible=source_compatible,
-    )
+INTERACTION_COMPONENT_KEY = "robot_motion_interaction"
+INTERACTION_NONCE_KEY = "_last_robot_motion_interaction_nonce"
 
 
 def _initialize_state() -> None:
-    """Seed widget state once per browser session."""
+    """Initialize demonstration state once per browser session."""
     defaults = {
         "demo_theta1_deg": float(DEFAULT_THETA1_DEG),
         "demo_theta2_deg": float(DEFAULT_THETA2_DEG),
@@ -98,7 +56,7 @@ def _initialize_state() -> None:
 
 
 def _reset_demo() -> None:
-    """Restore the source demonstration's default state."""
+    """Restore the default robot state."""
     st.session_state.demo_theta1_deg = float(DEFAULT_THETA1_DEG)
     st.session_state.demo_theta2_deg = float(DEFAULT_THETA2_DEG)
 
@@ -114,9 +72,9 @@ def _reset_demo() -> None:
     st.session_state.demo_show_labels = True
 
 
-def _component_event(component_key: str) -> dict | None:
-    """Read the latest custom-component event from Session State."""
-    component_state = st.session_state.get(component_key)
+def _component_event() -> dict | None:
+    """Return the latest committed browser interaction event."""
+    component_state = st.session_state.get(INTERACTION_COMPONENT_KEY)
 
     if component_state is None:
         return None
@@ -126,126 +84,67 @@ def _component_event(component_key: str) -> dict | None:
     if event is None and isinstance(component_state, dict):
         event = component_state.get("event")
 
-    if not isinstance(event, dict):
-        return None
-
-    return event
+    return event if isinstance(event, dict) else None
 
 
-def _clip_workspace_coordinate(value: float) -> float:
-    """Keep obstacle centers within the source workspace control range."""
-    return max(-2.0, min(2.0, float(value)))
+def _radians_to_degrees(angle: float) -> float:
+    """Convert a radian angle to the 0..360 degree slider interval."""
+    value = float(angle)
+
+    if abs(value - TWO_PI) <= 1e-9:
+        return 360.0
+
+    return degrees(float(wrap_angle(value)))
 
 
-def _radians_to_slider_degrees(angle: float) -> float:
-    """Convert a periodic angle to the 0..360 degree slider interval."""
-    wrapped = float(wrap_angle(angle))
-    value = degrees(wrapped)
+def _consume_interaction_event() -> None:
+    """Synchronize a committed browser interaction with Streamlit controls."""
+    event = _component_event()
 
-    # Numerical roundoff near a complete revolution can produce values just
-    # below/above the slider bounds.
-    return max(0.0, min(360.0, value))
-
-
-def _consume_workspace_drag_event() -> None:
-    """Apply one unprocessed workspace drag event to widget state."""
-    event = _component_event(WORKSPACE_COMPONENT_KEY)
     if not event:
         return
 
     nonce = event.get("nonce")
-    if nonce is None or nonce == st.session_state.get(WORKSPACE_EVENT_NONCE_KEY):
+
+    if (
+        nonce is None
+        or nonce
+        == st.session_state.get(INTERACTION_NONCE_KEY)
+    ):
         return
 
-    # Mark it as consumed before processing so a malformed event cannot loop.
-    st.session_state[WORKSPACE_EVENT_NONCE_KEY] = nonce
-
-    kind = event.get("kind")
+    st.session_state[INTERACTION_NONCE_KEY] = nonce
 
     try:
-        x = float(event.get("x"))
-        y = float(event.get("y"))
-    except (TypeError, ValueError):
+        theta1 = float(event["theta1"])
+        theta2 = float(event["theta2"])
+
+        obstacle1 = event["obstacle1"]
+        obstacle2 = event["obstacle2"]
+
+        obstacle1_x = float(obstacle1[0])
+        obstacle1_y = float(obstacle1[1])
+        obstacle2_x = float(obstacle2[0])
+        obstacle2_y = float(obstacle2[1])
+    except (KeyError, TypeError, ValueError, IndexError):
         return
 
-    if kind == "obstacle1":
-        st.session_state.demo_obstacle1_x = _clip_workspace_coordinate(x)
-        st.session_state.demo_obstacle1_y = _clip_workspace_coordinate(y)
-        return
+    st.session_state.demo_theta1_deg = _radians_to_degrees(theta1)
+    st.session_state.demo_theta2_deg = _radians_to_degrees(theta2)
 
-    if kind == "obstacle2":
-        st.session_state.demo_obstacle2_x = _clip_workspace_coordinate(x)
-        st.session_state.demo_obstacle2_y = _clip_workspace_coordinate(y)
-        return
-
-    if kind == "elbow":
-        # The elbow is constrained to the unit circle geometrically.  Only its
-        # polar angle matters, so pointer radius is intentionally ignored.
-        theta1 = float(wrap_angle(atan2(y, x)))
-        st.session_state.demo_theta1_deg = _radians_to_slider_degrees(theta1)
-        return
-
-    if kind == "end_effector":
-        current_theta1 = radians(float(st.session_state.demo_theta1_deg))
-        current_theta2 = radians(float(st.session_state.demo_theta2_deg))
-
-        theta1, theta2 = inverse_kinematics(
-            x=x,
-            y=y,
-            current_theta1=current_theta1,
-            current_theta2=current_theta2,
-            clamp_target=True,
-        )
-
-        st.session_state.demo_theta1_deg = _radians_to_slider_degrees(theta1)
-        st.session_state.demo_theta2_deg = _radians_to_slider_degrees(theta2)
-
-
-def _consume_cspace_drag_event() -> None:
-    """Apply one unprocessed C-space marker drag to the joint sliders."""
-    event = _component_event(CSPACE_COMPONENT_KEY)
-    if not event:
-        return
-
-    nonce = event.get("nonce")
-    if nonce is None or nonce == st.session_state.get(CSPACE_EVENT_NONCE_KEY):
-        return
-
-    st.session_state[CSPACE_EVENT_NONCE_KEY] = nonce
-
-    if event.get("kind") != "configuration":
-        return
-
-    try:
-        theta1 = max(0.0, min(TWO_PI, float(event.get("x"))))
-        theta2 = max(0.0, min(TWO_PI, float(event.get("y"))))
-    except (TypeError, ValueError):
-        return
-
-    # Keep 2*pi representable as 360 degrees instead of wrapping it to zero.
-    st.session_state.demo_theta1_deg = max(
-        0.0,
-        min(360.0, degrees(theta1)),
-    )
-    st.session_state.demo_theta2_deg = max(
-        0.0,
-        min(360.0, degrees(theta2)),
-    )
-
-
-def _consume_drag_events() -> None:
-    """Synchronize visual drag events before Streamlit widgets are created."""
-    _consume_workspace_drag_event()
-    _consume_cspace_drag_event()
+    st.session_state.demo_obstacle1_x = max(-2.0, min(2.0, obstacle1_x))
+    st.session_state.demo_obstacle1_y = max(-2.0, min(2.0, obstacle1_y))
+    st.session_state.demo_obstacle2_x = max(-2.0, min(2.0, obstacle2_x))
+    st.session_state.demo_obstacle2_y = max(-2.0, min(2.0, obstacle2_y))
 
 
 def _robot_control_card() -> tuple[float, float]:
-    """Render precise degree-based joint controls and return radians."""
+    """Render precise joint controls and return radians."""
     with st.container(border=True):
         st.markdown("### 🤖 Robot Configuration")
         st.caption(
-            "Drag the blue/purple robot handles in the workspace, drag the "
-            "red point in C-space, or use these sliders for precise values."
+            "Drag the robot or C-space crosshair, or use these sliders "
+            "for precise values."
         )
 
         theta1_deg = st.slider(
@@ -254,7 +153,7 @@ def _robot_control_card() -> tuple[float, float]:
             max_value=360.0,
             step=1.0,
             key="demo_theta1_deg",
-            format="%.0f°",
+            format="%.1f°",
         )
 
         theta2_deg = st.slider(
@@ -263,7 +162,7 @@ def _robot_control_card() -> tuple[float, float]:
             max_value=360.0,
             step=1.0,
             key="demo_theta2_deg",
-            format="%.0f°",
+            format="%.1f°",
         )
 
         st.caption(
@@ -280,11 +179,11 @@ def _obstacle_control_card(
     x_key: str,
     y_key: str,
 ) -> tuple[float, float]:
-    """Render precise Cartesian sliders for one draggable obstacle."""
+    """Render precise obstacle-position controls."""
     with st.container(border=True):
         st.markdown(f"### ⭕ Obstacle {number}")
         st.caption(
-            "Drag the orange circle in the workspace or use these sliders "
+            "Drag the obstacle in the workspace or use these sliders "
             "for exact positioning."
         )
 
@@ -312,10 +211,9 @@ def _obstacle_control_card(
 
 
 def _model_settings_card() -> tuple[int, bool, bool, bool]:
-    """Render quality and display controls in a compact settings card."""
+    """Render configuration-space and display settings."""
     with st.container(border=True):
         st.markdown("### ⚙️ Model Settings")
-        st.caption("Control C-space resolution and display details.")
 
         quality = st.slider(
             "Configuration-space quality (Q)",
@@ -325,19 +223,23 @@ def _model_settings_card() -> tuple[int, bool, bool, bool]:
             key="demo_quality",
         )
 
-        resolution = 32 * int(quality)
+        final_resolution = 32 * int(quality)
+        preview_resolution = 8 * int(quality)
+
         st.caption(
-            f"{resolution} × {resolution} grid "
-            f"({resolution * resolution:,} sampled configurations)"
+            f"Live preview: {preview_resolution} × {preview_resolution} • "
+            f"Final: {final_resolution} × {final_resolution}"
         )
 
         source_compatible = st.toggle(
-            "Source-compatible C-space",
+            "Wolfram C-space convention",
+            value = False,
             key="demo_source_compatible",
             help=(
-                "Preserves the sign convention used by the Mathematica "
-                "configuration-space raster."
+                "Preserves the second-link sign convention used by the "
+                "original Wolfram configuration-space raster."
             ),
+            
         )
 
         toggle_col1, toggle_col2 = st.columns(2)
@@ -362,64 +264,45 @@ def _model_settings_card() -> tuple[int, bool, bool, bool]:
     )
 
 
-def _render_summary_metrics(
+def _render_state_and_diagnostics(
     theta1: float,
     theta2: float,
     obstacles: tuple[tuple[float, float], tuple[float, float]],
     quality: int,
 ) -> None:
-    """Render the current state as a compact row of metrics."""
+    """Render current state and numerical diagnostics in one visible row."""
     pose = forward_kinematics(theta1, theta2)
     collision = collision_details(theta1, theta2, obstacles)
-    phase_x, phase_y = angles_to_phase_locator(theta1, theta2)
 
-    state_col, angle_col, end_col, grid_col, locator_col = st.columns(5)
+    state_col, diagnostics_col = st.columns([1.0, 1.25], gap="large")
 
     with state_col:
-        st.metric(
-            "Robot state",
-            "COLLISION" if collision.in_collision else "Collision-free",
-        )
+        with st.container(border=True):
+            st.markdown("### Current State")
 
-    with angle_col:
-        st.metric(
-            "Joint angles",
-            f"{degrees(theta1):.0f}° / {degrees(theta2):.0f}°",
-        )
+            metric_left, metric_right = st.columns(2)
 
-    with end_col:
-        st.metric(
-            "End effector",
-            f"({pose.end_effector[0]:.2f}, {pose.end_effector[1]:.2f})",
-        )
+            with metric_left:
+                st.metric(
+                    "Robot state",
+                    "COLLISION" if collision.in_collision else "Collision-free",
+                )
+                st.metric(
+                    "End effector",
+                    f"({pose.end_effector[0]:.2f}, {pose.end_effector[1]:.2f})",
+                )
 
-    with grid_col:
-        st.metric(
-            "C-space grid",
-            f"{32 * quality} × {32 * quality}",
-        )
+            with metric_right:
+                st.metric(
+                    "Joint angles",
+                    f"{degrees(theta1):.1f}° / {degrees(theta2):.1f}°",
+                )
+                st.metric(
+                    "C-space grid",
+                    f"{32 * quality} × {32 * quality}",
+                )
 
-    with locator_col:
-        st.metric(
-            "Source locator",
-            f"({phase_x:.2f}, {phase_y:.2f})",
-        )
-
-
-def _render_diagnostics(
-    theta1: float,
-    theta2: float,
-    obstacles: tuple[tuple[float, float], tuple[float, float]],
-) -> None:
-    """Render detailed numerical values for comparison/testing."""
-    pose = forward_kinematics(theta1, theta2)
-    collision = collision_details(theta1, theta2, obstacles)
-    
-    with st.expander("Numerical diagnostics", expanded=False):
-        left, right = st.columns([1, 1.3])
-
-        with left:
-            st.markdown("#### Robot geometry")
+            st.markdown("#### Robot Geometry")
             st.markdown(
                 f"""
 - **Base:** `({pose.base[0]:.6f}, {pose.base[1]:.6f})`
@@ -431,14 +314,16 @@ def _render_diagnostics(
 """
             )
 
-        with right:
+    with diagnostics_col:
+        with st.container(border=True):
+            st.markdown("### Numerical Diagnostics")
             st.markdown("#### Link-to-obstacle distances")
 
-            distance_rows = []
+            rows = []
 
             for link_index in range(collision.distances.shape[0]):
                 for obstacle_index in range(collision.distances.shape[1]):
-                    distance_rows.append(
+                    rows.append(
                         {
                             "Link": link_index + 1,
                             "Obstacle": obstacle_index + 1,
@@ -458,26 +343,30 @@ def _render_diagnostics(
                     )
 
             st.dataframe(
-                distance_rows,
+                rows,
                 use_container_width=True,
                 hide_index=True,
             )
 
+            st.caption(
+                "Distances are measured from each obstacle center to the nearest "
+                "point on each robot link centerline."
+            )
 
 def display_demonstration_page() -> None:
-    """Render the directly manipulable robotics conversion."""
+    """Render the interactive robot demonstration."""
     _initialize_state()
 
-    # Custom-component values are stored in Session State after a drag-triggered
-    # rerun. Consume them before creating sliders that use the same state keys.
-    _consume_drag_events()
+    # Browser drag events are committed once, then synchronized before the
+    # Streamlit widgets using the same state keys are created.
+    _consume_interaction_event()
 
     title_col, reset_col = st.columns([8, 1])
 
     with title_col:
         st.title("Robot Motion with Obstacles")
         st.caption(
-            "Interactive Python / Streamlit conversion of the Mathematica demonstration"
+            "Interactive workspace and configuration-space exploration"
         )
 
     with reset_col:
@@ -487,22 +376,57 @@ def display_demonstration_page() -> None:
         if st.button(
             "↺ Reset",
             use_container_width=True,
-            help="Restore the original demonstration defaults.",
+            help="Restore the default robot and obstacle positions.",
         ):
             _reset_demo()
             st.rerun()
 
     st.markdown(
         """
-Directly manipulate the robot and obstacles in the plots, or use the controls
-for exact values. The workspace and **configuration space (C-space)** remain
-synchronized: changing either view updates the same robot state.
+Move the robot and obstacles directly in the visualizations, or use the
+controls for exact values. Both views share the same robot state and remain
+synchronized.
 """
     )
 
-    # ------------------------------------------------------------------
-    # Controls
-    # ------------------------------------------------------------------
+    st.subheader("Interactive Visualization")
+
+    # Read the current state before rendering the visualization.
+    theta1 = radians(float(st.session_state.demo_theta1_deg))
+    theta2 = radians(float(st.session_state.demo_theta2_deg))
+
+    obstacle1 = (
+        float(st.session_state.demo_obstacle1_x),
+        float(st.session_state.demo_obstacle1_y),
+    )
+    obstacle2 = (
+        float(st.session_state.demo_obstacle2_x),
+        float(st.session_state.demo_obstacle2_y),
+    )
+    obstacles = (obstacle1, obstacle2)
+
+    quality = int(st.session_state.demo_quality)
+    source_compatible = bool(st.session_state.demo_source_compatible)
+    show_angle_arcs = bool(st.session_state.demo_show_angle_arcs)
+    show_labels = bool(st.session_state.demo_show_labels)
+
+    render_interactive_robot_system(
+        theta1=theta1,
+        theta2=theta2,
+        obstacles=obstacles,
+        quality=quality,
+        source_compatible=source_compatible,
+        show_angle_arcs=show_angle_arcs,
+        show_labels=show_labels,
+        key=INTERACTION_COMPONENT_KEY,
+    )
+
+    st.caption(
+        "The browser updates both views continuously while you drag. "
+        "Obstacle motion uses an 8Q C-space preview and commits the final "
+        "32Q map when the drag ends."
+    )
+
     st.subheader("Controls")
 
     robot_col, obstacle1_col, obstacle2_col, settings_col = st.columns(
@@ -537,97 +461,11 @@ synchronized: changing either view updates the same robot state.
 
     obstacles = (obstacle1, obstacle2)
 
-    # ------------------------------------------------------------------
-    # Model calculation
-    # ------------------------------------------------------------------
-    with st.spinner("Computing configuration space..."):
-        configuration = _cached_configuration_space(
-            obstacle_1=obstacle1,
-            obstacle_2=obstacle2,
-            quality=quality,
-            source_compatible=source_compatible,
-        )
+    st.subheader("Robot State & Diagnostics")
 
-    pose = forward_kinematics(theta1, theta2)
-
-    workspace_figure = create_workspace_figure(
+    _render_state_and_diagnostics(
         theta1=theta1,
         theta2=theta2,
         obstacles=obstacles,
-        show_angle_arcs=show_angle_arcs,
-        show_labels=show_labels,
+        quality=quality,
     )
-
-    configuration_figure = create_configuration_space_figure(
-        configuration=configuration,
-        theta1=theta1,
-        theta2=theta2,
-        show_source_note=True,
-    )
-
-    # ------------------------------------------------------------------
-    # Directly manipulable visualizations
-    # ------------------------------------------------------------------
-    st.subheader("Interactive Visualization")
-
-    workspace_col, cspace_col = st.columns(2, gap="large")
-
-    with workspace_col:
-        with st.container(border=True):
-            st.markdown("#### Robot Workspace")
-            st.caption(
-                "Drag obstacles or robot handles directly in Cartesian space."
-            )
-
-            render_draggable_workspace(
-                figure=workspace_figure,
-                pose=pose,
-                obstacles=obstacles,
-                key=WORKSPACE_COMPONENT_KEY,
-            )
-
-    with cspace_col:
-        with st.container(border=True):
-            st.markdown("#### Configuration Space")
-            st.caption(
-                "Drag the red handle to set θ₁ and θ₂ directly."
-            )
-
-            render_draggable_configuration_space(
-                figure=configuration_figure,
-                theta1=theta1,
-                theta2=theta2,
-                key=CSPACE_COMPONENT_KEY,
-            )
-    c1, c2 = st.columns([1,1])
-    with c1:
-        _render_diagnostics(
-            theta1=theta1,
-            theta2=theta2,
-            obstacles=obstacles,
-        )
-    with c2:
-        with st.expander("Conversion notes for testing", expanded=False):
-            st.markdown(
-                """
-                - **Obstacle interaction:** the orange obstacle circles are now directly
-                draggable in the workspace. The X/Y sliders remain available for exact
-                values.
-                - **C-space interaction:** the red configuration handle is directly draggable
-                and updates θ₁/θ₂.
-                - **Robot interaction:** dragging the blue elbow ring changes θ₁. Dragging the
-                purple end-effector ring runs planar two-link inverse kinematics and selects
-                the elbow branch closest to the current pose.
-                - **Unreachable end-effector targets:** drag targets outside the reachable
-                radius are projected to the nearest reachable boundary.
-                - **Periodicity:** the robot model treats both joint angles modulo `2π`.
-                - **Quality Q:** the source high-resolution rule of `32Q` samples per axis is
-                preserved.
-                - **Dynamic low-resolution behavior:** Mathematica temporarily uses `8Q`
-                samples while a locator is actively moving. This build commits a drag on
-                mouse release, then computes the final `32Q` grid.
-                - **C-space sign convention:** the source raster uses `a₁ - a₂` for the second
-                link even though the workspace drawing uses `θ₁ + θ₂`. The source-compatible
-                toggle preserves that behavior for comparison.
-                """
-                )

@@ -1,4 +1,4 @@
-"""Help and reference page for the Robot Motion with Obstacles application."""
+"""Help and reference page for Robot Motion with Obstacles."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import streamlit as st
 
 
 NavigationCallback = Callable[[str], None]
+
+SOURCE_URL = "https://demonstrations.wolfram.com/RobotMotionWithObstacles/"
 
 
 GLOSSARY = {
@@ -31,8 +33,8 @@ GLOSSARY = {
         "end-effector position."
     ),
     "Quality (Q)": (
-        "The configuration-space sampling setting. The displayed map uses "
-        "32Q samples along each angular axis."
+        "The configuration-space sampling setting. The final map uses 32Q "
+        "samples along each angular axis."
     ),
     "Periodic Angles": (
         "Joint angles repeat every 2π radians, so 0° and 360° describe the "
@@ -52,24 +54,25 @@ FAQS = [
         ),
     },
     {
-        "question": "Why are the joint controls shown in degrees?",
+        "question": "Can I manipulate the robot directly?",
         "answer": (
-            "Degrees are easier to read and adjust interactively. The robot model "
-            "converts those values to radians internally for its calculations."
+            "Yes. Drag either orange obstacle, the blue elbow handle, or the "
+            "purple end-effector handle in the workspace. You can also click or "
+            "drag the red C-space crosshair to change θ₁ and θ₂."
         ),
     },
     {
-        "question": "Can I manipulate the robot directly in the plots?",
+        "question": "Why does obstacle dragging feel faster than a normal Streamlit update?",
         "answer": (
-            "Yes. In the workspace you can drag either orange obstacle, the "
-            "blue elbow handle, or the purple end-effector handle. In "
-            "configuration space you can drag the red marker to change θ₁ and θ₂."
+            "The workspace and C-space preview update locally in the browser "
+            "during the drag. The final state is synchronized back to Python "
+            "when you release the pointer."
         ),
     },
     {
         "question": "What happens when I drag the end effector?",
         "answer": (
-            "The application solves the two-link inverse-kinematics problem and "
+            "The browser solves the two-link inverse-kinematics problem and "
             "selects the solution closest to the robot's current pose. Targets "
             "outside the reachable workspace are projected onto the nearest "
             "reachable boundary."
@@ -86,15 +89,17 @@ FAQS = [
     {
         "question": "What does Q change?",
         "answer": (
-            "Q changes the sampling density of the configuration-space map. "
-            "Higher values produce a finer map but require more computation."
+            "Q controls the C-space sampling density. While an obstacle is being "
+            "dragged, the live preview uses 8Q samples per axis. When the drag "
+            "ends, the final map uses 32Q samples per axis."
         ),
     },
     {
-        "question": "Why might the C-space boundary look blocky?",
+        "question": "What is the Wolfram C-space convention toggle?",
         "answer": (
-            "The map is sampled on a finite grid. Increasing Q increases the "
-            "number of samples and makes the displayed collision boundary finer."
+            "The original Wolfram implementation uses a different second-link "
+            "sign convention in its configuration-space raster than in its "
+            "workspace drawing. The toggle preserves that source behavior."
         ),
     },
 ]
@@ -131,11 +136,11 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
             st.markdown("### Controls")
             st.markdown(
                 """
-1. Drag an **orange obstacle** to reposition it in the workspace.
+1. Drag an **orange obstacle** to reposition it.
 2. Drag the **blue elbow handle** to change θ₁.
 3. Drag the **purple end-effector handle** to reposition the arm using inverse kinematics.
-4. Drag the **red C-space marker** to change θ₁ and θ₂ together.
-5. Use the joint and obstacle sliders when you need exact values.
+4. Click or drag the **red C-space crosshair** to change θ₁ and θ₂ together.
+5. Use the sliders when you need exact values.
 6. Change **Q** to adjust configuration-space sampling resolution.
 7. Use the display toggles to show or hide workspace annotations.
 8. Use **Reset** to return to the default state.
@@ -151,7 +156,7 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
 - **Configuration Space:** joint-angle combinations mapped to collision state.
 - **Dark C-space cells:** sampled collision configurations.
 - **Light C-space cells:** sampled collision-free configurations.
-- **Red marker:** the robot's current configuration.
+- **Red crosshair:** the robot's current configuration.
 """
             )
 
@@ -166,8 +171,8 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
             st.markdown("### Robot Geometry")
             st.write(
                 "The robot has two revolute links of equal length. The second "
-                "link angle is relative to the first, so the end-effector position "
-                "depends on both θ₁ and θ₂."
+                "link angle is relative to the first, so the end-effector "
+                "position depends on both θ₁ and θ₂."
             )
 
             st.latex(r"x_1 = \cos(\theta_1)")
@@ -185,9 +190,27 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
             )
 
             st.write(
-                "The C-space plot repeats this collision test over a grid of "
+                "The C-space view repeats this collision test over a grid of "
                 "joint-angle pairs."
             )
+
+    st.divider()
+
+    st.subheader("Original Demonstration")
+
+    with st.container(border=True):
+        st.markdown(
+            """
+This application is based on **Robot Motion with Obstacles** by
+**Aaron T. Becker** and **Haoran Zhao**, published in the
+**Wolfram Demonstrations Project**.
+"""
+        )
+
+        st.link_button(
+            "Open the original Wolfram demonstration ↗",
+            SOURCE_URL,
+        )
 
     st.divider()
 
@@ -215,9 +238,10 @@ def display_help_page(navigate: NavigationCallback | None = None) -> None:
     with st.expander("View technical notes", expanded=False):
         st.markdown(
             """
-- Drag interactions are synchronized back to the Python model when the drag is committed.
-- Configuration space is sampled on a finite grid, so its visual resolution depends on **Q**.
-- The application keeps joint and obstacle sliders available alongside direct manipulation for precise input.
-- Plot navigation controls remain available for zooming, panning, and resetting the visualizations.
+- Workspace and C-space interaction run together in one browser component.
+- C-space crosshair motion updates the robot immediately without a Streamlit rerun.
+- Obstacle drags use an **8Q** live C-space preview and a **32Q** final map.
+- The committed state is synchronized back to Python after the drag ends.
+- The Python robot model remains available for diagnostics and independent calculations.
 """
         )

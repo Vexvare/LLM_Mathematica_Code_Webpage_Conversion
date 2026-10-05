@@ -1,128 +1,109 @@
-"""Stable direct-manipulation layer for the robotics demonstration.
+"""High-performance browser interaction for Robot Motion with Obstacles.
 
-This version does NOT use Plotly editable ``layout.shapes`` for dragging.
-Instead, it renders one normal Plotly graph and places a transparent SVG
-interaction layer directly on top of that same graph.
+The workspace and configuration space are rendered together in one Streamlit
+custom component. During a drag, both views update entirely in the browser.
+Python receives the final state only when the interaction is committed.
 
-Why
----
-Plotly editable shapes worked inconsistently inside Streamlit custom components:
-their edit layer could detach from the graph and component resizing could create
-runaway height changes.  The SVG overlay avoids both issues:
-
-* Plotly owns the chart, axes, grid, heatmap, robot traces, and mode bar.
-* SVG handles are positioned from Plotly's own axis transforms.
-* Handles therefore appear directly on top of the data coordinates.
-* Only handle elements receive pointer events; the rest of the overlay is
-  transparent, so Plotly hover/pan/zoom controls still work.
-* The Plotly drawing height is fixed; only width responds to browser resizing.
-
-The Python page still receives the same events:
-``obstacle1``, ``obstacle2``, ``elbow``, ``end_effector``, and
-``configuration``.
+This keeps the interaction responsive while preserving the Python model as the
+canonical implementation used by the rest of the application.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Iterable
 
 import numpy as np
-import plotly.graph_objects as go
 import streamlit as st
 
-from ui.robot_model import (
-    DEFAULT_GEOMETRY,
-    RobotPose,
-    TWO_PI,
-)
+from ui.robot_model import DEFAULT_GEOMETRY, TWO_PI
 
-
-# ---------------------------------------------------------------------------
-# Component frontend
-# ---------------------------------------------------------------------------
 
 _COMPONENT_HTML = """
-<div class="robot-component">
-    <div class="robot-stage">
-        <div class="robot-plot"></div>
-        <svg class="robot-overlay" aria-label="Draggable robot controls"></svg>
+<div class="rm-component">
+    <div class="rm-grid">
+        <section class="rm-panel">
+            <div class="rm-panel-title">Robot Workspace</div>
+            <canvas class="rm-workspace"></canvas>
+            <div class="rm-panel-hint">
+                Drag an obstacle, the elbow, or the end effector.
+            </div>
+        </section>
+
+        <section class="rm-panel">
+            <div class="rm-panel-title">Configuration Space</div>
+            <canvas class="rm-cspace"></canvas>
+            <div class="rm-panel-hint">
+                Click or drag the red crosshair to move the robot.
+            </div>
+        </section>
     </div>
-    <div class="robot-hint"></div>
 </div>
 """
 
 
 _COMPONENT_CSS = """
-.robot-component {
+.rm-component {
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    overflow: hidden;
 }
 
-.robot-stage {
-    position: relative;
+.rm-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1rem;
     width: 100%;
-    height: 500px;
+}
+
+.rm-panel {
     min-width: 0;
-    overflow: hidden;
+    border: 1px solid rgba(128, 128, 128, 0.20);
+    border-radius: 0.75rem;
+    padding: 0.75rem;
     box-sizing: border-box;
+    background: var(--st-background-color, #ffffff);
 }
 
-.robot-plot {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 500px;
-    min-width: 0;
-    box-sizing: border-box;
-}
-
-.robot-overlay {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 500px;
-    overflow: hidden;
-    pointer-events: none;
-    z-index: 8;
-}
-
-.robot-overlay .drag-handle {
-    pointer-events: all;
-    cursor: grab;
-    touch-action: none;
-}
-
-.robot-overlay .drag-handle:active {
-    cursor: grabbing;
-}
-
-.robot-overlay .handle-label {
-    pointer-events: none;
-    user-select: none;
+.rm-panel-title {
+    text-align: center;
     font-family: sans-serif;
-    font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
+    font-size: 0.98rem;
+    margin: 0.05rem 0 0.4rem 0;
 }
 
-.robot-hint {
-    width: 100%;
-    box-sizing: border-box;
-    color: var(--st-text-color);
+.rm-panel-hint {
+    text-align: center;
+    font-family: sans-serif;
+    font-size: 0.76rem;
     opacity: 0.68;
-    font-size: 0.78rem;
-    line-height: 1.35;
-    padding: 0.35rem 0.25rem 0.10rem 0.25rem;
-    overflow-wrap: anywhere;
+    margin-top: 0.35rem;
+    line-height: 1.3;
+}
+
+.rm-workspace,
+.rm-cspace {
+    display: block;
+    width: 100%;
+    height: 470px;
+    min-width: 0;
+    border-radius: 0.45rem;
+    background: #ffffff;
+    touch-action: none;
+    user-select: none;
+}
+
+.rm-workspace {
+    cursor: default;
+}
+
+.rm-cspace {
+    cursor: crosshair;
 }
 """
 
 
 _COMPONENT_JS = r"""
-import Plotly from "https://cdn.jsdelivr.net/npm/plotly.js-dist-min@3.1.0/+esm";
-
 export default function(component) {
     const {
         parentElement,
@@ -130,562 +111,1394 @@ export default function(component) {
         setStateValue,
     } = component;
 
-    const stage = parentElement.querySelector(".robot-stage");
-    const plot = parentElement.querySelector(".robot-plot");
-    const overlay = parentElement.querySelector(".robot-overlay");
-    const hint = parentElement.querySelector(".robot-hint");
+    const grid = parentElement.querySelector(".rm-grid");
+    const workspaceCanvas = parentElement.querySelector(".rm-workspace");
+    const cspaceCanvas = parentElement.querySelector(".rm-cspace");
 
-    if (!stage || !plot || !overlay) {
-        throw new Error("Robot component could not find its rendering elements.");
+    if (!grid || !workspaceCanvas || !cspaceCanvas) {
+        throw new Error("Robot interaction component could not find its rendering elements.");
     }
 
-    hint.textContent = data.hint ?? "";
-
-    // Clean listeners/observers from a prior render of this component instance.
-    if (plot.__robotRelayoutHandler && plot.removeListener) {
-        plot.removeListener("plotly_relayout", plot.__robotRelayoutHandler);
-    }
-    if (plot.__robotAfterPlotHandler && plot.removeListener) {
-        plot.removeListener("plotly_afterplot", plot.__robotAfterPlotHandler);
-    }
-    if (stage.__robotResizeObserver) {
-        stage.__robotResizeObserver.disconnect();
-        stage.__robotResizeObserver = null;
+    if (parentElement.__rmCleanup) {
+        parentElement.__rmCleanup();
     }
 
-    const incomingFigure = data.figure ?? {data: [], layout: {}};
+    const TWO_PI = Math.PI * 2.0;
+    const WORKSPACE_MIN = -2.2;
+    const WORKSPACE_MAX = 2.2;
 
-    const figure = {
-        data: JSON.parse(JSON.stringify(incomingFigure.data ?? [])),
-        layout: JSON.parse(JSON.stringify(incomingFigure.layout ?? {})),
+    const geometry = {
+        linkLength: Number(data.geometry?.link_length ?? 1.0),
+        linkHalfWidth: Number(data.geometry?.link_half_width ?? 0.125),
+        obstacleRadius: Number(data.geometry?.obstacle_radius ?? 0.125),
     };
 
-    // Fixed vertical size prevents recursive Streamlit/Plotly height growth.
-    delete figure.layout.width;
-    delete figure.layout.uirevision;
-    figure.layout.height = 500;
-    figure.layout.autosize = true;
+    geometry.clearance =
+        geometry.linkHalfWidth + geometry.obstacleRadius;
 
-    const config = {
-        responsive: true,
-        displaylogo: false,
-        displayModeBar: true,
-        scrollZoom: true,
-        editable: false,
-        ...data.config,
+    const state = {
+        theta1: wrap(Number(data.theta1 ?? 0)),
+        theta2: wrap(Number(data.theta2 ?? 0)),
+        obstacles: (data.obstacles ?? [[1.1, 1.1], [1.1, -1.1]])
+            .map((point) => [Number(point[0]), Number(point[1])]),
+        quality: Math.max(1, Math.min(10, Number(data.quality ?? 2))),
+        sourceCompatible: Boolean(data.source_compatible ?? true),
+        showAngleArcs: Boolean(data.show_angle_arcs ?? true),
+        showLabels: Boolean(data.show_labels ?? true),
+        cspaceRaster: null,
+        cspaceResolution: 0,
+        cspacePreview: false,
+        workspaceGeom: null,
+        cspaceGeom: null,
+        workspaceDrag: null,
+        cspaceDragging: false,
+        previewFrame: null,
+        destroyed: false,
     };
 
-    // Each handle lives in data coordinates. The overlay SVG is only the
-    // interaction/rendering layer; its positions are derived from Plotly axes.
-    const handles = (data.handles ?? []).map((handle) => ({...handle}));
-
-    let cancelled = false;
-    let activeDrag = null;
-
-    const svgNS = "http://www.w3.org/2000/svg";
-
-    const getAxes = () => {
-        const full = plot._fullLayout;
-        if (!full?.xaxis || !full?.yaxis) {
-            return null;
-        }
-        return {
-            xaxis: full.xaxis,
-            yaxis: full.yaxis,
-        };
+    const colors = {
+        background: "#ffffff",
+        grid: "#e5e7eb",
+        axis: "#64748b",
+        text: "#334155",
+        robot: "#59636e",
+        robotCollision: "#d62728",
+        joint: "#111827",
+        endEffector: "#7c3aed",
+        elbow: "#2563eb",
+        obstacleFill: "rgba(249, 115, 22, 0.45)",
+        obstacleStroke: "#c2410c",
+        obstacleLabel: "#9a3412",
+        free: [248, 250, 252, 255],
+        collision: [51, 65, 85, 255],
+        crosshair: "#dc2626",
+        angleArc: "#64748b",
     };
 
-    const dataToPixel = (x, y) => {
-        const axes = getAxes();
-        if (!axes) {
-            return null;
-        }
+    function wrap(angle) {
+        const value = angle % TWO_PI;
+        return value < 0 ? value + TWO_PI : value;
+    }
 
-        return {
-            x: axes.xaxis._offset + axes.xaxis.l2p(Number(x)),
-            y: axes.yaxis._offset + axes.yaxis.l2p(Number(y)),
-        };
-    };
+    function angularDistance(a, b) {
+        let delta = wrap(a) - wrap(b);
+        delta = (delta + Math.PI) % TWO_PI - Math.PI;
+        return Math.abs(delta);
+    }
 
-    const pixelToData = (clientX, clientY) => {
-        const axes = getAxes();
-        if (!axes) {
-            return null;
-        }
+    function clamp(value, minimum, maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
 
-        const rect = plot.getBoundingClientRect();
-        const px = clientX - rect.left;
-        const py = clientY - rect.top;
-
-        return {
-            x: axes.xaxis.p2l(px - axes.xaxis._offset),
-            y: axes.yaxis.p2l(py - axes.yaxis._offset),
-        };
-    };
-
-    const clampValue = (value, bounds) => {
-        if (!Array.isArray(bounds) || bounds.length !== 2) {
-            return value;
-        }
-
-        return Math.max(
-            Number(bounds[0]),
-            Math.min(Number(bounds[1]), value),
-        );
-    };
-
-    const handleRadiusPx = (handle) => {
-        if (Number.isFinite(Number(handle.radius_px))) {
-            return Number(handle.radius_px);
-        }
-
-        if (Number.isFinite(Number(handle.radius_data))) {
-            const center = dataToPixel(handle.x, handle.y);
-            const edge = dataToPixel(
-                Number(handle.x) + Number(handle.radius_data),
-                handle.y,
-            );
-
-            if (center && edge) {
-                return Math.max(5, Math.abs(edge.x - center.x));
-            }
-        }
-
-        return 10;
-    };
-
-    const clearOverlay = () => {
-        while (overlay.firstChild) {
-            overlay.removeChild(overlay.firstChild);
-        }
-    };
-
-    const positionHandleGroup = (group, handle) => {
-        const pixel = dataToPixel(handle.x, handle.y);
-        if (!pixel) {
-            return;
-        }
-
-        const circle = group.querySelector("circle");
-        const label = group.querySelector("text");
-
-        circle.setAttribute("cx", String(pixel.x));
-        circle.setAttribute("cy", String(pixel.y));
-        circle.setAttribute("r", String(handleRadiusPx(handle)));
-
-        if (label) {
-            label.setAttribute("x", String(pixel.x));
-            label.setAttribute(
-                "y",
-                String(pixel.y - handleRadiusPx(handle) - 8),
-            );
-        }
-    };
-
-    const emitHandle = (handle) => {
-        setStateValue("event", {
-            kind: handle.kind,
-            x: Number(handle.x),
-            y: Number(handle.y),
-            nonce: Date.now(),
-        });
-    };
-
-    const startDrag = (event, handle, group) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        activeDrag = {
-            pointerId: event.pointerId,
-            handle,
-            group,
-        };
-
-        const circle = group.querySelector("circle");
-        if (circle?.setPointerCapture) {
-            try {
-                circle.setPointerCapture(event.pointerId);
-            } catch (_) {
-                // Pointer capture is an enhancement, not a requirement.
-            }
-        }
-    };
-
-    const continueDrag = (event) => {
-        if (
-            !activeDrag ||
-            event.pointerId !== activeDrag.pointerId
-        ) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-
-        const position = pixelToData(event.clientX, event.clientY);
-        if (!position) {
-            return;
-        }
-
-        const handle = activeDrag.handle;
-
-        handle.x = clampValue(
-            Number(position.x),
-            handle.x_bounds,
-        );
-        handle.y = clampValue(
-            Number(position.y),
-            handle.y_bounds,
-        );
-
-        positionHandleGroup(activeDrag.group, handle);
-    };
-
-    const finishDrag = (event) => {
-        if (
-            !activeDrag ||
-            event.pointerId !== activeDrag.pointerId
-        ) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-
-        const handle = activeDrag.handle;
-        activeDrag = null;
-
-        emitHandle(handle);
-    };
-
-    const drawHandles = () => {
-        if (cancelled || !plot._fullLayout) {
-            return;
-        }
-
-        const rect = plot.getBoundingClientRect();
+    function configureCanvas(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
         const width = Math.max(1, rect.width);
-        const height = 500;
+        const height = Math.max(1, rect.height);
 
-        overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
-        overlay.setAttribute("width", String(width));
-        overlay.setAttribute("height", String(height));
+        const pixelWidth = Math.max(1, Math.round(width * dpr));
+        const pixelHeight = Math.max(1, Math.round(height * dpr));
 
-        clearOverlay();
+        if (
+            canvas.width !== pixelWidth ||
+            canvas.height !== pixelHeight
+        ) {
+            canvas.width = pixelWidth;
+            canvas.height = pixelHeight;
+        }
 
-        for (const handle of handles) {
-            const group = document.createElementNS(svgNS, "g");
-            group.setAttribute("data-kind", handle.kind);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-            const circle = document.createElementNS(svgNS, "circle");
-            circle.classList.add("drag-handle");
-            circle.setAttribute("fill", handle.fill ?? "rgba(0,0,0,0.12)");
-            circle.setAttribute("stroke", handle.stroke ?? "#111827");
-            circle.setAttribute(
-                "stroke-width",
-                String(handle.stroke_width ?? 3),
-            );
+        return {
+            ctx,
+            width,
+            height,
+            dpr,
+        };
+    }
 
-            const title = document.createElementNS(svgNS, "title");
-            title.textContent = handle.title ?? `Drag ${handle.kind}`;
-            circle.appendChild(title);
+    function squarePlotGeometry(canvasInfo) {
+        const leftMargin = 54;
+        const rightMargin = 18;
+        const topMargin = 28;
+        const bottomMargin = 46;
 
-            circle.addEventListener(
-                "pointerdown",
-                (event) => startDrag(event, handle, group),
-            );
-            circle.addEventListener("pointermove", continueDrag);
-            circle.addEventListener("pointerup", finishDrag);
-            circle.addEventListener("pointercancel", finishDrag);
+        const availableWidth =
+            canvasInfo.width - leftMargin - rightMargin;
+        const availableHeight =
+            canvasInfo.height - topMargin - bottomMargin;
 
-            group.appendChild(circle);
+        const size = Math.max(
+            40,
+            Math.min(availableWidth, availableHeight),
+        );
 
-            if (handle.label) {
-                const label = document.createElementNS(svgNS, "text");
-                label.classList.add("handle-label");
-                label.setAttribute(
-                    "fill",
-                    handle.label_color ?? handle.stroke ?? "#111827",
-                );
-                label.setAttribute("text-anchor", "middle");
-                label.textContent = handle.label;
-                group.appendChild(label);
+        const left =
+            leftMargin + Math.max(0, (availableWidth - size) / 2.0);
+        const top =
+            topMargin + Math.max(0, (availableHeight - size) / 2.0);
+
+        return {
+            left,
+            top,
+            size,
+            right: left + size,
+            bottom: top + size,
+        };
+    }
+
+    function workspaceToPixel(x, y, geom) {
+        const span = WORKSPACE_MAX - WORKSPACE_MIN;
+
+        return {
+            x:
+                geom.left +
+                ((x - WORKSPACE_MIN) / span) * geom.size,
+            y:
+                geom.top +
+                ((WORKSPACE_MAX - y) / span) * geom.size,
+        };
+    }
+
+    function workspaceFromPixel(px, py, geom) {
+        const span = WORKSPACE_MAX - WORKSPACE_MIN;
+
+        return {
+            x:
+                WORKSPACE_MIN +
+                ((px - geom.left) / geom.size) * span,
+            y:
+                WORKSPACE_MAX -
+                ((py - geom.top) / geom.size) * span,
+        };
+    }
+
+    function cspaceToPixel(theta1, theta2, geom) {
+        const t1 = clamp(Number(theta1), 0, TWO_PI);
+        const t2 = clamp(Number(theta2), 0, TWO_PI);
+
+        return {
+            x: geom.left + (t1 / TWO_PI) * geom.size,
+            y:
+                geom.top +
+                ((TWO_PI - t2) / TWO_PI) * geom.size,
+        };
+    }
+
+    function cspaceFromPixel(px, py, geom) {
+        return {
+            theta1: clamp(
+                ((px - geom.left) / geom.size) * TWO_PI,
+                0,
+                TWO_PI,
+            ),
+            theta2: clamp(
+                ((geom.bottom - py) / geom.size) * TWO_PI,
+                0,
+                TWO_PI,
+            ),
+        };
+    }
+
+    function pointSegmentDistanceSquared(px, py, ax, ay, bx, by) {
+        const abx = bx - ax;
+        const aby = by - ay;
+        const lengthSquared = abx * abx + aby * aby;
+
+        if (lengthSquared <= 1e-15) {
+            const dx = px - ax;
+            const dy = py - ay;
+            return dx * dx + dy * dy;
+        }
+
+        let t =
+            ((px - ax) * abx + (py - ay) * aby) /
+            lengthSquared;
+
+        t = clamp(t, 0, 1);
+
+        const nx = ax + t * abx;
+        const ny = ay + t * aby;
+        const dx = px - nx;
+        const dy = py - ny;
+
+        return dx * dx + dy * dy;
+    }
+
+    function forwardKinematics(theta1, theta2) {
+        const length = geometry.linkLength;
+
+        const jointX = length * Math.cos(theta1);
+        const jointY = length * Math.sin(theta1);
+
+        const secondAngle = theta1 + theta2;
+
+        return {
+            base: [0, 0],
+            joint: [jointX, jointY],
+            end: [
+                jointX + length * Math.cos(secondAngle),
+                jointY + length * Math.sin(secondAngle),
+            ],
+        };
+    }
+
+    function currentCollision() {
+        const pose = forwardKinematics(
+            state.theta1,
+            state.theta2,
+        );
+
+        const clearanceSquared =
+            geometry.clearance * geometry.clearance;
+
+        for (const obstacle of state.obstacles) {
+            const [ox, oy] = obstacle;
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    0,
+                    0,
+                    pose.joint[0],
+                    pose.joint[1],
+                ) < clearanceSquared
+            ) {
+                return true;
             }
 
-            overlay.appendChild(group);
-            positionHandleGroup(group, handle);
-        }
-    };
-
-    const relayoutHandler = () => {
-        // Background Plotly pan/zoom changes axis transforms; keep handles
-        // attached to their data coordinates.
-        requestAnimationFrame(drawHandles);
-    };
-
-    const afterPlotHandler = () => {
-        requestAnimationFrame(drawHandles);
-    };
-
-    plot.__robotRelayoutHandler = relayoutHandler;
-    plot.__robotAfterPlotHandler = afterPlotHandler;
-
-    Plotly.react(
-        plot,
-        figure.data,
-        figure.layout,
-        config,
-    ).then(() => {
-        if (cancelled) {
-            return;
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    pose.joint[0],
+                    pose.joint[1],
+                    pose.end[0],
+                    pose.end[1],
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
         }
 
-        if (plot.on) {
-            plot.on("plotly_relayout", relayoutHandler);
-            plot.on("plotly_afterplot", afterPlotHandler);
+        return false;
+    }
+
+    function inverseKinematics(x, y) {
+        const l1 = geometry.linkLength;
+        const l2 = geometry.linkLength;
+
+        let targetX = Number(x);
+        let targetY = Number(y);
+
+        let radius = Math.hypot(targetX, targetY);
+        const maxReach = l1 + l2;
+        const minReach = Math.abs(l1 - l2);
+
+        if (radius > maxReach && radius > 0) {
+            const scale = maxReach / radius;
+            targetX *= scale;
+            targetY *= scale;
+            radius = maxReach;
+        } else if (radius < minReach) {
+            if (radius > 0) {
+                const scale = minReach / radius;
+                targetX *= scale;
+                targetY *= scale;
+            } else {
+                targetX = minReach;
+                targetY = 0;
+            }
+
+            radius = minReach;
         }
 
-        drawHandles();
+        const r2 =
+            targetX * targetX + targetY * targetY;
 
-        // Observe WIDTH only. Height is fixed, so this cannot create the old
-        // vertical-resize feedback loop.
-        if (typeof ResizeObserver !== "undefined") {
-            let previousWidth = stage.getBoundingClientRect().width;
+        const cosTheta2 = clamp(
+            (r2 - l1 * l1 - l2 * l2) /
+                (2 * l1 * l2),
+            -1,
+            1,
+        );
 
-            const observer = new ResizeObserver(() => {
-                const nextWidth = stage.getBoundingClientRect().width;
+        const magnitude = Math.acos(cosTheta2);
+        const candidates = [magnitude, -magnitude];
 
-                if (
-                    cancelled ||
-                    Math.abs(nextWidth - previousWidth) < 1
-                ) {
-                    return;
+        let best = null;
+
+        for (const theta2Candidate of candidates) {
+            const theta1Candidate =
+                Math.atan2(targetY, targetX) -
+                Math.atan2(
+                    l2 * Math.sin(theta2Candidate),
+                    l1 + l2 * Math.cos(theta2Candidate),
+                );
+
+            const t1 = wrap(theta1Candidate);
+            const t2 = wrap(theta2Candidate);
+
+            const score =
+                angularDistance(t1, state.theta1) +
+                angularDistance(t2, state.theta2);
+
+            if (!best || score < best.score) {
+                best = {
+                    score,
+                    theta1: t1,
+                    theta2: t2,
+                };
+            }
+        }
+
+        return best;
+    }
+
+    function cspaceCollision(
+        jointX,
+        jointY,
+        endX,
+        endY,
+    ) {
+        const clearanceSquared =
+            geometry.clearance * geometry.clearance;
+
+        for (const obstacle of state.obstacles) {
+            const ox = obstacle[0];
+            const oy = obstacle[1];
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    0,
+                    0,
+                    jointX,
+                    jointY,
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    jointX,
+                    jointY,
+                    endX,
+                    endY,
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function computeCspace(resolution, preview) {
+        const offscreen = document.createElement("canvas");
+        offscreen.width = resolution;
+        offscreen.height = resolution;
+
+        const ctx = offscreen.getContext("2d");
+        const image = ctx.createImageData(
+            resolution,
+            resolution,
+        );
+
+        const linkLength = geometry.linkLength;
+
+        const cos1 = new Float64Array(resolution);
+        const sin1 = new Float64Array(resolution);
+        const cos2 = new Float64Array(resolution);
+        const sin2 = new Float64Array(resolution);
+
+        for (let i = 0; i < resolution; i += 1) {
+            const angle =
+                (i + 0.5) * (TWO_PI / resolution);
+
+            cos1[i] = Math.cos(angle);
+            sin1[i] = Math.sin(angle);
+            cos2[i] = Math.cos(angle);
+            sin2[i] = Math.sin(angle);
+        }
+
+        const free = colors.free;
+        const collision = colors.collision;
+
+        for (let j = 0; j < resolution; j += 1) {
+            for (let i = 0; i < resolution; i += 1) {
+                const jointX = linkLength * cos1[i];
+                const jointY = linkLength * sin1[i];
+
+                let secondCos;
+                let secondSin;
+
+                if (state.sourceCompatible) {
+                    // cos(theta1 - theta2), sin(theta1 - theta2)
+                    secondCos =
+                        cos1[i] * cos2[j] +
+                        sin1[i] * sin2[j];
+                    secondSin =
+                        sin1[i] * cos2[j] -
+                        cos1[i] * sin2[j];
+                } else {
+                    // cos(theta1 + theta2), sin(theta1 + theta2)
+                    secondCos =
+                        cos1[i] * cos2[j] -
+                        sin1[i] * sin2[j];
+                    secondSin =
+                        sin1[i] * cos2[j] +
+                        cos1[i] * sin2[j];
                 }
 
-                previousWidth = nextWidth;
+                const endX =
+                    jointX + linkLength * secondCos;
+                const endY =
+                    jointY + linkLength * secondSin;
 
-                requestAnimationFrame(() => {
-                    try {
-                        Plotly.Plots.resize(plot);
-                    } catch (_) {
-                        // Safe during component teardown.
-                    }
+                const collides = cspaceCollision(
+                    jointX,
+                    jointY,
+                    endX,
+                    endY,
+                );
 
-                    requestAnimationFrame(drawHandles);
-                });
-            });
+                // theta2 increases upward in the displayed coordinate system.
+                const row = resolution - 1 - j;
+                const index = (row * resolution + i) * 4;
+                const rgba = collides ? collision : free;
 
-            observer.observe(stage);
-            stage.__robotResizeObserver = observer;
+                image.data[index] = rgba[0];
+                image.data[index + 1] = rgba[1];
+                image.data[index + 2] = rgba[2];
+                image.data[index + 3] = rgba[3];
+            }
         }
-    });
 
-    return () => {
-        cancelled = true;
-        activeDrag = null;
+        ctx.putImageData(image, 0, 0);
 
-        if (plot.__robotRelayoutHandler && plot.removeListener) {
-            plot.removeListener(
-                "plotly_relayout",
-                plot.__robotRelayoutHandler,
+        state.cspaceRaster = offscreen;
+        state.cspaceResolution = resolution;
+        state.cspacePreview = preview;
+    }
+
+    function drawAxes(
+        ctx,
+        geom,
+        xTicks,
+        yTicks,
+        xLabel,
+        yLabel,
+    ) {
+        ctx.save();
+
+        ctx.strokeStyle = colors.grid;
+        ctx.lineWidth = 1;
+        ctx.fillStyle = colors.text;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+
+        for (const tick of xTicks) {
+            const x = tick.pixel;
+
+            ctx.beginPath();
+            ctx.moveTo(x, geom.top);
+            ctx.lineTo(x, geom.bottom);
+            ctx.stroke();
+
+            ctx.fillText(
+                tick.label,
+                x,
+                geom.bottom + 7,
             );
         }
 
-        if (plot.__robotAfterPlotHandler && plot.removeListener) {
-            plot.removeListener(
-                "plotly_afterplot",
-                plot.__robotAfterPlotHandler,
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+
+        for (const tick of yTicks) {
+            const y = tick.pixel;
+
+            ctx.beginPath();
+            ctx.moveTo(geom.left, y);
+            ctx.lineTo(geom.right, y);
+            ctx.stroke();
+
+            ctx.fillText(
+                tick.label,
+                geom.left - 8,
+                y,
             );
         }
 
-        if (stage.__robotResizeObserver) {
-            stage.__robotResizeObserver.disconnect();
-            stage.__robotResizeObserver = null;
+        ctx.strokeStyle = colors.axis;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(
+            geom.left,
+            geom.top,
+            geom.size,
+            geom.size,
+        );
+
+        ctx.fillStyle = colors.text;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+
+        ctx.fillText(
+            xLabel,
+            geom.left + geom.size / 2,
+            geom.bottom + 42,
+        );
+
+        ctx.save();
+        ctx.translate(
+            geom.left - 42,
+            geom.top + geom.size / 2,
+        );
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(yLabel, 0, 0);
+        ctx.restore();
+
+        ctx.restore();
+    }
+
+    function drawWorkspace() {
+        if (state.destroyed) {
+            return;
         }
+
+        const canvasInfo = configureCanvas(
+            workspaceCanvas,
+        );
+        const {ctx, width, height} = canvasInfo;
+        const geom = squarePlotGeometry(canvasInfo);
+        state.workspaceGeom = geom;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = colors.background;
+        ctx.fillRect(0, 0, width, height);
+
+        const tickValues = [-2, -1, 0, 1, 2];
+
+        drawAxes(
+            ctx,
+            geom,
+            tickValues.map((value) => ({
+                label: String(value),
+                pixel: workspaceToPixel(
+                    value,
+                    0,
+                    geom,
+                ).x,
+            })),
+            tickValues.map((value) => ({
+                label: String(value),
+                pixel: workspaceToPixel(
+                    0,
+                    value,
+                    geom,
+                ).y,
+            })),
+            "x",
+            "y",
+        );
+
+        const scale =
+            geom.size /
+            (WORKSPACE_MAX - WORKSPACE_MIN);
+
+        const obstacleRadiusPx =
+            geometry.obstacleRadius * scale;
+
+        for (
+            let index = 0;
+            index < state.obstacles.length;
+            index += 1
+        ) {
+            const obstacle = state.obstacles[index];
+            const pixel = workspaceToPixel(
+                obstacle[0],
+                obstacle[1],
+                geom,
+            );
+
+            ctx.beginPath();
+            ctx.arc(
+                pixel.x,
+                pixel.y,
+                obstacleRadiusPx,
+                0,
+                TWO_PI,
+            );
+            ctx.fillStyle = colors.obstacleFill;
+            ctx.fill();
+            ctx.strokeStyle = colors.obstacleStroke;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            if (state.showLabels) {
+                ctx.fillStyle = colors.obstacleLabel;
+                ctx.font = "600 12px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "bottom";
+                ctx.fillText(
+                    `O${index + 1}`,
+                    pixel.x,
+                    pixel.y - obstacleRadiusPx - 7,
+                );
+            }
+        }
+
+        const pose = forwardKinematics(
+            state.theta1,
+            state.theta2,
+        );
+
+        const basePx = workspaceToPixel(
+            pose.base[0],
+            pose.base[1],
+            geom,
+        );
+        const jointPx = workspaceToPixel(
+            pose.joint[0],
+            pose.joint[1],
+            geom,
+        );
+        const endPx = workspaceToPixel(
+            pose.end[0],
+            pose.end[1],
+            geom,
+        );
+
+        const collision = currentCollision();
+        const linkColor = collision
+            ? colors.robotCollision
+            : colors.robot;
+
+        ctx.save();
+        ctx.strokeStyle = linkColor;
+        ctx.lineWidth =
+            2 * geometry.linkHalfWidth * scale;
+        ctx.lineCap = "round";
+
+        ctx.beginPath();
+        ctx.moveTo(basePx.x, basePx.y);
+        ctx.lineTo(jointPx.x, jointPx.y);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(jointPx.x, jointPx.y);
+        ctx.lineTo(endPx.x, endPx.y);
+        ctx.stroke();
+        ctx.restore();
+
+        // Base.
+        ctx.beginPath();
+        ctx.arc(basePx.x, basePx.y, 6, 0, TWO_PI);
+        ctx.fillStyle = colors.joint;
+        ctx.fill();
+
+        // Elbow drag ring.
+        ctx.beginPath();
+        ctx.arc(jointPx.x, jointPx.y, 10, 0, TWO_PI);
+        ctx.fillStyle = "rgba(37, 99, 235, 0.14)";
+        ctx.fill();
+        ctx.strokeStyle = colors.elbow;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // End-effector drag ring.
+        ctx.beginPath();
+        ctx.arc(endPx.x, endPx.y, 11, 0, TWO_PI);
+        ctx.fillStyle = "rgba(124, 58, 237, 0.16)";
+        ctx.fill();
+        ctx.strokeStyle = colors.endEffector;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        if (state.showAngleArcs) {
+            ctx.save();
+            ctx.strokeStyle = colors.angleArc;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 3]);
+
+            const arc1Radius = 0.35 * scale;
+            ctx.beginPath();
+            ctx.arc(
+                basePx.x,
+                basePx.y,
+                arc1Radius,
+                -state.theta1,
+                0,
+                false,
+            );
+            ctx.stroke();
+
+            const arc2Radius = 0.28 * scale;
+            const start = -state.theta1;
+            const end = -(state.theta1 + state.theta2);
+            ctx.beginPath();
+            ctx.arc(
+                jointPx.x,
+                jointPx.y,
+                arc2Radius,
+                start,
+                end,
+                state.theta2 > Math.PI,
+            );
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
+        ctx.save();
+        ctx.font = "700 12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillStyle = collision
+            ? colors.robotCollision
+            : "#166534";
+
+        ctx.fillText(
+            collision ? "COLLISION" : "Collision-free",
+            geom.left + 8,
+            geom.top + 8,
+        );
+        ctx.restore();
+    }
+
+    function drawCspace() {
+        if (state.destroyed) {
+            return;
+        }
+
+        const canvasInfo = configureCanvas(cspaceCanvas);
+        const {ctx, width, height} = canvasInfo;
+        const geom = squarePlotGeometry(canvasInfo);
+        state.cspaceGeom = geom;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = colors.background;
+        ctx.fillRect(0, 0, width, height);
+
+        const tickValues = [
+            {value: 0, label: "0"},
+            {value: Math.PI / 2, label: "π/2"},
+            {value: Math.PI, label: "π"},
+            {value: 3 * Math.PI / 2, label: "3π/2"},
+            {value: TWO_PI, label: "2π"},
+        ];
+
+        drawAxes(
+            ctx,
+            geom,
+            tickValues.map((tick) => ({
+                label: tick.label,
+                pixel:
+                    geom.left +
+                    (tick.value / TWO_PI) * geom.size,
+            })),
+            tickValues.map((tick) => ({
+                label: tick.label,
+                pixel:
+                    geom.bottom -
+                    (tick.value / TWO_PI) * geom.size,
+            })),
+            "θ₁",
+            "θ₂",
+        );
+
+        if (state.cspaceRaster) {
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(
+                state.cspaceRaster,
+                geom.left,
+                geom.top,
+                geom.size,
+                geom.size,
+            );
+        }
+
+        const crosshair = cspaceToPixel(
+            state.theta1,
+            state.theta2,
+            geom,
+        );
+
+        ctx.save();
+        ctx.strokeStyle = colors.crosshair;
+        ctx.lineWidth = 2.5;
+
+        ctx.beginPath();
+        ctx.moveTo(crosshair.x - 10, crosshair.y);
+        ctx.lineTo(crosshair.x + 10, crosshair.y);
+        ctx.moveTo(crosshair.x, crosshair.y - 10);
+        ctx.lineTo(crosshair.x, crosshair.y + 10);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(
+            crosshair.x,
+            crosshair.y,
+            4,
+            0,
+            TWO_PI,
+        );
+        ctx.fillStyle = colors.crosshair;
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = colors.text;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "top";
+
+        const label = state.cspacePreview
+            ? `${state.cspaceResolution} × ${state.cspaceResolution} preview`
+            : `${state.cspaceResolution} × ${state.cspaceResolution}`;
+
+        ctx.fillText(
+            label,
+            geom.right - 5,
+            geom.top + 6,
+        );
+        ctx.restore();
+    }
+
+    function pointerPosition(event, canvas) {
+        const rect = canvas.getBoundingClientRect();
+
+        return {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top,
+        };
+    }
+
+    function distancePixels(a, b) {
+        return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function workspaceHitTest(position) {
+        const geom = state.workspaceGeom;
+
+        if (!geom) {
+            return null;
+        }
+
+        const pose = forwardKinematics(
+            state.theta1,
+            state.theta2,
+        );
+
+        const jointPx = workspaceToPixel(
+            pose.joint[0],
+            pose.joint[1],
+            geom,
+        );
+        const endPx = workspaceToPixel(
+            pose.end[0],
+            pose.end[1],
+            geom,
+        );
+
+        if (distancePixels(position, endPx) <= 16) {
+            return {
+                kind: "end_effector",
+            };
+        }
+
+        if (distancePixels(position, jointPx) <= 16) {
+            return {
+                kind: "elbow",
+            };
+        }
+
+        const scale =
+            geom.size /
+            (WORKSPACE_MAX - WORKSPACE_MIN);
+
+        const obstacleHitRadius = Math.max(
+            12,
+            geometry.obstacleRadius * scale + 5,
+        );
+
+        for (
+            let index = 0;
+            index < state.obstacles.length;
+            index += 1
+        ) {
+            const obstaclePx = workspaceToPixel(
+                state.obstacles[index][0],
+                state.obstacles[index][1],
+                geom,
+            );
+
+            if (
+                distancePixels(position, obstaclePx) <=
+                obstacleHitRadius
+            ) {
+                return {
+                    kind: "obstacle",
+                    index,
+                };
+            }
+        }
+
+        return null;
+    }
+
+    function scheduleCspacePreview() {
+        if (state.previewFrame !== null) {
+            return;
+        }
+
+        state.previewFrame = requestAnimationFrame(() => {
+            state.previewFrame = null;
+
+            if (state.destroyed) {
+                return;
+            }
+
+            computeCspace(
+                8 * state.quality,
+                true,
+            );
+            drawCspace();
+        });
+    }
+
+    function emitState(kind) {
+        setStateValue("event", {
+            kind,
+            theta1: Number(state.theta1),
+            theta2: Number(state.theta2),
+            obstacle1: [
+                Number(state.obstacles[0][0]),
+                Number(state.obstacles[0][1]),
+            ],
+            obstacle2: [
+                Number(state.obstacles[1][0]),
+                Number(state.obstacles[1][1]),
+            ],
+            nonce: Date.now(),
+        });
+    }
+
+    function workspacePointerDown(event) {
+        const position = pointerPosition(
+            event,
+            workspaceCanvas,
+        );
+
+        const hit = workspaceHitTest(position);
+
+        if (!hit) {
+            return;
+        }
+
+        event.preventDefault();
+
+        state.workspaceDrag = {
+            pointerId: event.pointerId,
+            ...hit,
+        };
+
+        workspaceCanvas.setPointerCapture?.(
+            event.pointerId,
+        );
+    }
+
+    function workspacePointerMove(event) {
+        const drag = state.workspaceDrag;
+
+        if (
+            !drag ||
+            drag.pointerId !== event.pointerId ||
+            !state.workspaceGeom
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const position = pointerPosition(
+            event,
+            workspaceCanvas,
+        );
+
+        const point = workspaceFromPixel(
+            position.x,
+            position.y,
+            state.workspaceGeom,
+        );
+
+        if (drag.kind === "obstacle") {
+            state.obstacles[drag.index][0] = clamp(
+                point.x,
+                -2,
+                2,
+            );
+            state.obstacles[drag.index][1] = clamp(
+                point.y,
+                -2,
+                2,
+            );
+
+            drawWorkspace();
+            scheduleCspacePreview();
+            return;
+        }
+
+        if (drag.kind === "elbow") {
+            state.theta1 = wrap(
+                Math.atan2(point.y, point.x),
+            );
+
+            drawWorkspace();
+            drawCspace();
+            return;
+        }
+
+        if (drag.kind === "end_effector") {
+            const solution = inverseKinematics(
+                point.x,
+                point.y,
+            );
+
+            state.theta1 = solution.theta1;
+            state.theta2 = solution.theta2;
+
+            drawWorkspace();
+            drawCspace();
+        }
+    }
+
+    function workspacePointerUp(event) {
+        const drag = state.workspaceDrag;
+
+        if (
+            !drag ||
+            drag.pointerId !== event.pointerId
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        state.workspaceDrag = null;
+
+        if (drag.kind === "obstacle") {
+            if (state.previewFrame !== null) {
+                cancelAnimationFrame(state.previewFrame);
+                state.previewFrame = null;
+            }
+
+            computeCspace(
+                32 * state.quality,
+                false,
+            );
+            drawCspace();
+
+            emitState(
+                drag.index === 0
+                    ? "obstacle1"
+                    : "obstacle2",
+            );
+            return;
+        }
+
+        emitState(drag.kind);
+    }
+
+    function cspaceUpdateFromPointer(event) {
+        if (!state.cspaceGeom) {
+            return;
+        }
+
+        const position = pointerPosition(
+            event,
+            cspaceCanvas,
+        );
+
+        const geom = state.cspaceGeom;
+
+        const x = clamp(
+            position.x,
+            geom.left,
+            geom.right,
+        );
+        const y = clamp(
+            position.y,
+            geom.top,
+            geom.bottom,
+        );
+
+        const angles = cspaceFromPixel(
+            x,
+            y,
+            geom,
+        );
+
+        // Preserve an exact 2π value at the top/right C-space boundary so the
+        // crosshair remains where the user placed it. Trigonometric kinematics
+        // naturally treat 2π as equivalent to 0.
+        state.theta1 = angles.theta1;
+        state.theta2 = angles.theta2;
+
+        drawWorkspace();
+        drawCspace();
+    }
+
+    function cspacePointerDown(event) {
+        if (!state.cspaceGeom) {
+            return;
+        }
+
+        const position = pointerPosition(
+            event,
+            cspaceCanvas,
+        );
+
+        const geom = state.cspaceGeom;
+
+        if (
+            position.x < geom.left ||
+            position.x > geom.right ||
+            position.y < geom.top ||
+            position.y > geom.bottom
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        state.cspaceDragging = true;
+        cspaceCanvas.setPointerCapture?.(
+            event.pointerId,
+        );
+
+        cspaceUpdateFromPointer(event);
+    }
+
+    function cspacePointerMove(event) {
+        if (!state.cspaceDragging) {
+            return;
+        }
+
+        event.preventDefault();
+        cspaceUpdateFromPointer(event);
+    }
+
+    function cspacePointerUp(event) {
+        if (!state.cspaceDragging) {
+            return;
+        }
+
+        event.preventDefault();
+        cspaceUpdateFromPointer(event);
+
+        state.cspaceDragging = false;
+        emitState("configuration");
+    }
+
+    function fullRender() {
+        if (state.destroyed) {
+            return;
+        }
+
+        computeCspace(
+            32 * state.quality,
+            false,
+        );
+        drawWorkspace();
+        drawCspace();
+    }
+
+    workspaceCanvas.addEventListener(
+        "pointerdown",
+        workspacePointerDown,
+    );
+    workspaceCanvas.addEventListener(
+        "pointermove",
+        workspacePointerMove,
+    );
+    workspaceCanvas.addEventListener(
+        "pointerup",
+        workspacePointerUp,
+    );
+    workspaceCanvas.addEventListener(
+        "pointercancel",
+        workspacePointerUp,
+    );
+
+    cspaceCanvas.addEventListener(
+        "pointerdown",
+        cspacePointerDown,
+    );
+    cspaceCanvas.addEventListener(
+        "pointermove",
+        cspacePointerMove,
+    );
+    cspaceCanvas.addEventListener(
+        "pointerup",
+        cspacePointerUp,
+    );
+    cspaceCanvas.addEventListener(
+        "pointercancel",
+        cspacePointerUp,
+    );
+
+    let previousWorkspaceWidth =
+        workspaceCanvas.getBoundingClientRect().width;
+    let previousCspaceWidth =
+        cspaceCanvas.getBoundingClientRect().width;
+
+    const resizeObserver =
+        typeof ResizeObserver !== "undefined"
+            ? new ResizeObserver(() => {
+                  const workspaceWidth =
+                      workspaceCanvas.getBoundingClientRect().width;
+                  const cspaceWidth =
+                      cspaceCanvas.getBoundingClientRect().width;
+
+                  if (
+                      Math.abs(
+                          workspaceWidth -
+                              previousWorkspaceWidth,
+                      ) < 1 &&
+                      Math.abs(
+                          cspaceWidth -
+                              previousCspaceWidth,
+                      ) < 1
+                  ) {
+                      return;
+                  }
+
+                  previousWorkspaceWidth =
+                      workspaceWidth;
+                  previousCspaceWidth =
+                      cspaceWidth;
+
+                  requestAnimationFrame(() => {
+                      drawWorkspace();
+                      drawCspace();
+                  });
+              })
+            : null;
+
+    // Streamlit v2 may provide parentElement as a ShadowRoot rather than an
+    // HTMLElement. ResizeObserver.observe() requires an actual Element, so
+    // observe the component's grid container instead.
+    resizeObserver?.observe(grid);
+
+    fullRender();
+
+    const cleanup = () => {
+        state.destroyed = true;
+
+        if (state.previewFrame !== null) {
+            cancelAnimationFrame(state.previewFrame);
+            state.previewFrame = null;
+        }
+
+        resizeObserver?.disconnect();
+
+        workspaceCanvas.removeEventListener(
+            "pointerdown",
+            workspacePointerDown,
+        );
+        workspaceCanvas.removeEventListener(
+            "pointermove",
+            workspacePointerMove,
+        );
+        workspaceCanvas.removeEventListener(
+            "pointerup",
+            workspacePointerUp,
+        );
+        workspaceCanvas.removeEventListener(
+            "pointercancel",
+            workspacePointerUp,
+        );
+
+        cspaceCanvas.removeEventListener(
+            "pointerdown",
+            cspacePointerDown,
+        );
+        cspaceCanvas.removeEventListener(
+            "pointermove",
+            cspacePointerMove,
+        );
+        cspaceCanvas.removeEventListener(
+            "pointerup",
+            cspacePointerUp,
+        );
+        cspaceCanvas.removeEventListener(
+            "pointercancel",
+            cspacePointerUp,
+        );
     };
+
+    parentElement.__rmCleanup = cleanup;
+
+    return cleanup;
 }
 """
 
 
-_draggable_plot = st.components.v2.component(
-    "robot_motion_overlay_plot",
+_interactive_robot = st.components.v2.component(
+    "robot_motion_fast_interaction",
     html=_COMPONENT_HTML,
     css=_COMPONENT_CSS,
     js=_COMPONENT_JS,
 )
 
 
-# ---------------------------------------------------------------------------
-# Python helpers
-# ---------------------------------------------------------------------------
-
-def _figure_json(figure: go.Figure) -> dict:
-    """Convert a Plotly figure into JSON-compatible Python data."""
-    return json.loads(figure.to_json())
-
-
-def _remove_workspace_obstacle_shapes(payload: dict) -> None:
-    """Remove static Plotly obstacle circles from the interactive workspace.
-
-    The SVG handles will render those same obstacles on top of the Plotly graph,
-    so leaving the layout shapes in place would produce duplicates.
-    """
-    layout = payload.setdefault("layout", {})
-    layout["shapes"] = []
-
-    # Hide the tiny obstacle-center marker traces; the SVG obstacle circles are
-    # both the visible objects and the drag targets.
-    for trace in payload.get("data", []):
-        if str(trace.get("name", "")).startswith("Obstacle "):
-            trace["visible"] = False
-
-
-def _hide_cspace_static_marker(payload: dict) -> None:
-    """Hide Plotly's static current-configuration marker."""
-    for trace in payload.get("data", []):
-        if trace.get("name") == "Current configuration":
-            trace["visible"] = False
-
-
-# ---------------------------------------------------------------------------
-# Workspace
-# ---------------------------------------------------------------------------
-
-def render_draggable_workspace(
-    figure: go.Figure,
-    pose: RobotPose,
-    obstacles: Iterable[Iterable[float]],
+def render_interactive_robot_system(
     *,
-    key: str,
-):
-    """Render the workspace with objects directly overlaid on the Plotly axes."""
-    obstacle_array = np.asarray(tuple(obstacles), dtype=float)
-    payload = _figure_json(figure)
-
-    _remove_workspace_obstacle_shapes(payload)
-
-    # Do not preserve stale browser layout state after Python reruns.
-    payload.setdefault("layout", {}).pop("uirevision", None)
-
-    handles = [
-        {
-            "kind": "obstacle1",
-            "x": float(obstacle_array[0, 0]),
-            "y": float(obstacle_array[0, 1]),
-            "radius_data": float(DEFAULT_GEOMETRY.obstacle_radius),
-            "fill": "rgba(249, 115, 22, 0.45)",
-            "stroke": "#c2410c",
-            "stroke_width": 3,
-            "label": "O1",
-            "label_color": "#9a3412",
-            "title": "Drag obstacle 1",
-            "x_bounds": [-2.0, 2.0],
-            "y_bounds": [-2.0, 2.0],
-        },
-        {
-            "kind": "obstacle2",
-            "x": float(obstacle_array[1, 0]),
-            "y": float(obstacle_array[1, 1]),
-            "radius_data": float(DEFAULT_GEOMETRY.obstacle_radius),
-            "fill": "rgba(249, 115, 22, 0.45)",
-            "stroke": "#c2410c",
-            "stroke_width": 3,
-            "label": "O2",
-            "label_color": "#9a3412",
-            "title": "Drag obstacle 2",
-            "x_bounds": [-2.0, 2.0],
-            "y_bounds": [-2.0, 2.0],
-        },
-        {
-            "kind": "elbow",
-            "x": float(pose.joint[0]),
-            "y": float(pose.joint[1]),
-            "radius_px": 10,
-            "fill": "rgba(37, 99, 235, 0.16)",
-            "stroke": "#2563eb",
-            "stroke_width": 3,
-            "title": "Drag elbow to change theta 1",
-        },
-        {
-            "kind": "end_effector",
-            "x": float(pose.end_effector[0]),
-            "y": float(pose.end_effector[1]),
-            "radius_px": 11,
-            "fill": "rgba(124, 58, 237, 0.16)",
-            "stroke": "#7c3aed",
-            "stroke_width": 3,
-            "title": "Drag end effector",
-        },
-    ]
-
-    return _draggable_plot(
-        data={
-            "figure": payload,
-            "handles": handles,
-            "hint": (
-                "Drag either orange obstacle, the blue elbow ring, or the "
-                "purple end-effector ring. Plotly pan/zoom remains available "
-                "when you drag the background or use the mode bar."
-            ),
-            "config": {
-                "displayModeBar": True,
-            },
-        },
-        default={"event": None},
-        key=key,
-        on_event_change=lambda: None,
-        width="stretch",
-        height=545,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Configuration space
-# ---------------------------------------------------------------------------
-
-def render_draggable_configuration_space(
-    figure: go.Figure,
     theta1: float,
     theta2: float,
-    *,
+    obstacles: Iterable[Iterable[float]],
+    quality: int,
+    source_compatible: bool,
+    show_angle_arcs: bool,
+    show_labels: bool,
     key: str,
 ):
-    """Render C-space with a red handle directly over the heatmap."""
-    payload = _figure_json(figure)
+    """Render the synchronized workspace and C-space interaction component."""
+    obstacle_array = np.asarray(tuple(obstacles), dtype=float)
 
-    _hide_cspace_static_marker(payload)
-    payload.setdefault("layout", {}).pop("uirevision", None)
+    if obstacle_array.shape != (2, 2):
+        raise ValueError(
+            "interactive view requires exactly two 2D obstacle centers"
+        )
 
-    handles = [
-        {
-            "kind": "configuration",
-            "x": float(theta1),
-            "y": float(theta2),
-            "radius_px": 10,
-            "fill": "rgba(220, 38, 38, 0.18)",
-            "stroke": "#dc2626",
-            "stroke_width": 3,
-            "title": "Drag current configuration",
-            "x_bounds": [0.0, float(TWO_PI)],
-            "y_bounds": [0.0, float(TWO_PI)],
-        }
-    ]
-
-    return _draggable_plot(
+    return _interactive_robot(
         data={
-            "figure": payload,
-            "handles": handles,
-            "hint": (
-                "Drag the red marker to change θ₁ and θ₂ directly. "
-                "Plotly pan/zoom remains available elsewhere in the plot."
-            ),
-            "config": {
-                "displayModeBar": True,
+            "theta1": float(theta1),
+            "theta2": float(theta2),
+            "obstacles": obstacle_array.tolist(),
+            "quality": int(quality),
+            "source_compatible": bool(source_compatible),
+            "show_angle_arcs": bool(show_angle_arcs),
+            "show_labels": bool(show_labels),
+            "geometry": {
+                "link_length": float(DEFAULT_GEOMETRY.link_length),
+                "link_half_width": float(DEFAULT_GEOMETRY.link_half_width),
+                "obstacle_radius": float(DEFAULT_GEOMETRY.obstacle_radius),
             },
         },
         default={"event": None},
         key=key,
         on_event_change=lambda: None,
         width="stretch",
-        height=545,
+        height=550,
     )
