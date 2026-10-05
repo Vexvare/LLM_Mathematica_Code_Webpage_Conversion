@@ -60,9 +60,11 @@ robot-motion-with-obstacles/
 
 ## Requirements
 
-- Python 3.10 or newer
+- Python 3.13 recommended for the tested environment
 - pip
 - A modern web browser
+
+The project has been tested locally with **Python 3.13.3**.
 
 The application dependencies are listed in `requirements.txt`.
 
@@ -72,9 +74,10 @@ The custom Streamlit component requires:
 Streamlit >= 1.51 and < 2
 ```
 
-For deployment, use the same Python version that you use successfully during local development.
+For deployment, use **Python 3.13** in Streamlit Community Cloud to match the
+tested local Python 3.13.3 environment as closely as the deployment interface allows.
 
-Check your version with:
+You can confirm your local version with:
 
 ```bash
 python --version
@@ -85,8 +88,8 @@ python --version
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
-cd <YOUR_REPOSITORY_DIRECTORY>
+git clone https://github.com/Vexvare/LLM_Mathematica_Code_Webpage_Conversion.git
+cd LLM_Mathematica_Code_Webpage_Conversion
 ```
 
 ### 2. Create a virtual environment
@@ -298,7 +301,12 @@ This repository is structured for deployment directly from GitHub.
 Before deploying:
 
 1. Make sure `app.py` and `requirements.txt` are in the repository root.
-2. Push the latest working version to GitHub.
+2. Push the latest working version to the `main` branch of:
+
+   ```text
+   https://github.com/Vexvare/LLM_Mathematica_Code_Webpage_Conversion
+   ```
+
 3. Confirm the application runs locally with:
 
    ```bash
@@ -324,7 +332,7 @@ Then deploy through [Streamlit Community Cloud](https://share.streamlit.io/):
    ```
 
 6. Choose a memorable `streamlit.app` subdomain if desired.
-7. Open **Advanced settings** and select the same Python version used locally.
+7. Open **Advanced settings** and select **Python 3.13**.
 8. Deploy the application.
 
 Community Cloud installs the dependencies from the repository's `requirements.txt` and launches the Streamlit entrypoint.
