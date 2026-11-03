@@ -1,0 +1,199 @@
+"""Editable, testable 2D standard-DH extension for the existing Streamlit demo."""
+from __future__ import annotations
+
+from math import radians
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from ui.dh_2d_model import (
+    PlanarDH, COLLISION_CLEARANCE, LINK_HALF_WIDTH, OBSTACLE_RADIUS,
+    forward_kinematics, collision_distances, configuration_space,
+)
+
+DEFAULT_ROWS = [
+    {"Joint": "1", "Type": "R", "θ (deg)": 0.0, "d": 0.0, "a": 1.0, "α (deg)": 0.0},
+    {"Joint": "2", "Type": "R", "θ (deg)": 0.0, "d": 0.0, "a": 1.0, "α (deg)": 0.0},
+]
+
+
+@st.cache_data(show_spinner=False)
+def _cached_map(a1: float, a2: float,
+                ox1: float, oy1: float, ox2: float, oy2: float,
+                quality: int):
+    return configuration_space(PlanarDH(a1, a2),
+                               ((ox1, oy1), (ox2, oy2)), resolution=quality*32)
+
+
+def _capsule_xy(start, end, radius: float):
+    """Physical-scale capsule, so link drawing matches the collision rule."""
+    start, end = np.asarray(start), np.asarray(end)
+    phi = float(np.arctan2(end[1] - start[1], end[0] - start[0]))
+    arc_end = np.linspace(phi - np.pi/2, phi + np.pi/2, 25)
+    arc_start = np.linspace(phi + np.pi/2, phi + 3*np.pi/2, 25)
+    x = np.r_[end[0] + radius*np.cos(arc_end),
+              start[0] + radius*np.cos(arc_start)]
+    y = np.r_[end[1] + radius*np.sin(arc_end),
+              start[1] + radius*np.sin(arc_start)]
+    return x, y
+
+
+def _workspace_figure(pose, obstacles, distances, geometry):
+    fig = go.Figure()
+    colors = ["#ef4444" if np.any(distances[i] < COLLISION_CLEARANCE) else "#60a5fa"
+              for i in range(2)]
+    links = ((pose.base, pose.joint), (pose.joint, pose.end_effector))
+    for index, (p0, p1) in enumerate(links):
+        x, y = _capsule_xy(p0, p1, LINK_HALF_WIDTH)
+        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", fill="toself",
+                                 fillcolor=colors[index],
+                                 line=dict(color="#1e3a8a", width=1.5),
+                                 name=f"Link {index+1}", hoverinfo="name"))
+    for index, (x, y) in enumerate(obstacles):
+        fig.add_shape(type="circle", x0=x-OBSTACLE_RADIUS, y0=y-OBSTACLE_RADIUS,
+                      x1=x+OBSTACLE_RADIUS, y1=y+OBSTACLE_RADIUS,
+                      fillcolor="rgba(249,115,22,0.65)",
+                      line=dict(color="#c2410c", width=2))
+        fig.add_trace(go.Scatter(x=[x], y=[y], mode="markers+text",
+                                 marker=dict(size=4, color="#c2410c"),
+                                 text=[f"O{index+1}"], textposition="top center",
+                                 name=f"Obstacle {index+1}"))
+    pts = np.vstack([pose.base, pose.joint, pose.end_effector])
+    fig.add_trace(go.Scatter(x=pts[:,0], y=pts[:,1],
+                             mode="markers+text", text=["Base", "J1", "TCP"],
+                             textposition="bottom center",
+                             marker=dict(size=[12, 13, 14], color=["#111827", "#1d4ed8", "#8b5cf6"],
+                                         line=dict(color="white", width=2)),
+                             name="Joints"))
+    ext = max(2.2, geometry.a1+geometry.a2+0.35,
+              *(abs(v)+0.35 for o in obstacles for v in o))
+    fig.update_layout(title="2D robot workspace", height=485, margin=dict(l=30,r=20,b=20,t=45),
+                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      showlegend=False, hovermode="closest")
+    fig.update_xaxes(title="X (units)", range=[-ext,ext], zeroline=True, gridcolor="rgba(128,128,128,0.18)")
+    fig.update_yaxes(title="Y (units)", range=[-ext,ext], zeroline=True, gridcolor="rgba(128,128,128,0.18)",
+                     scaleanchor="x", scaleratio=1)
+    return fig
+
+
+def _cspace_figure(angles, blocked, theta1_deg, theta2_deg):
+    fig = go.Figure()
+    fig.add_trace(go.Heatmap(x=angles, y=angles, z=blocked, zmin=0, zmax=1,
+                             colorscale=[[0,"#e2e8f0"],[0.499,"#e2e8f0"],
+                                         [0.5,"#334155"],[1,"#334155"]],
+                             showscale=False,
+                             hovertemplate="θ₁=%{x:.1f}°<br>θ₂=%{y:.1f}°<br>collision=%{z}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=[theta1_deg % 360], y=[theta2_deg % 360],
+                             mode="markers", marker=dict(size=13, color="#dc2626",
+                                                         symbol="circle", line=dict(color="white",width=2)),
+                             name="Current pose", hovertemplate="Current configuration<extra></extra>"))
+    fig.update_layout(title="Configuration space · collision map", height=485,
+                      margin=dict(l=40,r=20,b=20,t=45), showlegend=False,
+                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    fig.update_xaxes(title="θ₁ (degrees)", range=[0,360], dtick=90, constrain="domain")
+    fig.update_yaxes(title="θ₂ (degrees)", range=[0,360], dtick=90,
+                     scaleanchor="x", scaleratio=1)
+    return fig
+
+
+def display_dh_2d_page() -> None:
+    st.title("Editable DH Table · 2D Robot")
+    st.caption("Assignment 2 extension | Standard Denavit–Hartenberg | Planar 2R")
+    st.write("Edit the **θ** angles and **a** link lengths in the DH table. Both plots, "
+             "collision detection, and forward kinematics update together. "
+             "The original Mathematica-style demonstration remains available on its own page.")
+
+    if "dh2d_rows" not in st.session_state:
+        st.session_state["dh2d_rows"] = [r.copy() for r in DEFAULT_ROWS]
+    col_text, col_reset = st.columns([6, 1])
+    with col_text:
+        st.subheader("Standard DH parameters")
+    with col_reset:
+        if st.button("↺ Reset", key="dh2d_reset", help="Restore the DH editor defaults"):
+            st.session_state["dh2d_rows"] = [r.copy() for r in DEFAULT_ROWS]
+            st.session_state.pop("dh2d_grid_editor", None)
+            st.rerun()
+
+    st.caption("R = revolute. θ and a are editable. d=0 and α=0 are fixed to keep the arm strictly planar. "
+               "Lengths are in the same arbitrary units as the original demonstration.")
+    edited = st.data_editor(
+        pd.DataFrame(st.session_state["dh2d_rows"]),
+        key="dh2d_grid_editor", hide_index=True,
+        num_rows="fixed", use_container_width=True,
+        disabled=["Joint", "Type", "d", "α (deg)"],
+        column_config={
+            "Joint": st.column_config.TextColumn("Joint"),
+            "Type": st.column_config.TextColumn("Type"),
+            "θ (deg)": st.column_config.NumberColumn("θ (deg)", min_value=-360.0,
+                        max_value=360.0, step=1.0, format="%.1f"),
+            "d": st.column_config.NumberColumn("d", format="%.1f"),
+            "a": st.column_config.NumberColumn("a (length)", min_value=0.1,
+                        max_value=5.0, step=0.1, format="%.2f"),
+            "α (deg)": st.column_config.NumberColumn("α (deg)", format="%.1f"),
+        },
+    )
+    try:
+        if len(edited) != 2:
+            raise ValueError("The planar example must contain exactly two revolute rows.")
+        v = edited.to_dict("records")
+        theta1, theta2 = (float(v[i]["θ (deg)"]) for i in range(2))
+        geo = PlanarDH(float(v[0]["a"]), float(v[1]["a"]))
+        if not np.isfinite([theta1, theta2]).all():
+            raise ValueError("Joint angles must be finite numbers.")
+        st.session_state["dh2d_rows"] = v
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        st.error(f"Check the editable DH values: {exc}")
+        st.stop()
+
+    with st.expander("DH transformation convention and mathematics"):
+        st.latex(r"{}^{i-1}T_i = R_z(\theta_i)\,T_z(d_i)\,T_x(a_i)\,R_x(\alpha_i)")
+        st.latex(r"x_{TCP}=a_1\cos\theta_1+a_2\cos(\theta_1+\theta_2)")
+        st.latex(r"y_{TCP}=a_1\sin\theta_1+a_2\sin(\theta_1+\theta_2)")
+        st.write("The configuration-space map uses the same θ₁+θ₂ convention as the robot plot.")
+
+    with st.container(border=True):
+        st.markdown("**Obstacle centers and map resolution**")
+        obcol1, obcol2, qualitycol = st.columns(3)
+        with obcol1:
+            ox1 = st.slider("Obstacle 1 X", -3.0, 3.0, 1.1, 0.1, key="dh2d_o1x")
+            oy1 = st.slider("Obstacle 1 Y", -3.0, 3.0, 1.1, 0.1, key="dh2d_o1y")
+        with obcol2:
+            ox2 = st.slider("Obstacle 2 X", -3.0, 3.0, 1.1, 0.1, key="dh2d_o2x")
+            oy2 = st.slider("Obstacle 2 Y", -3.0, 3.0, -1.1, 0.1, key="dh2d_o2y")
+        with qualitycol:
+            quality = st.slider("C-space quality Q", min_value=1, max_value=10,
+                                value=2, step=1, key="dh2d_quality")
+            st.caption(f"Grid: {32*quality} × {32*quality} samples")
+
+    obstacles = ((ox1, oy1), (ox2, oy2))
+    pose = forward_kinematics(radians(theta1), radians(theta2), geo)
+    distances = collision_distances(pose, obstacles)
+    collision = bool(np.any(distances < COLLISION_CLEARANCE))
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Robot state", "COLLISION" if collision else "Collision-free")
+    m2.metric("End effector X / Y", f"{pose.end_effector[0]:.3f} / {pose.end_effector[1]:.3f}")
+    m3.metric("Maximum reach", f"{geo.a1+geo.a2:.2f} units")
+
+    angles, blocked = _cached_map(geo.a1, geo.a2, ox1, oy1, ox2, oy2, quality)
+    a, b = st.columns(2, gap="large")
+    with a:
+        st.plotly_chart(_workspace_figure(pose, obstacles, distances, geo),
+                        use_container_width=True, config={"displaylogo": False})
+    with b:
+        st.plotly_chart(_cspace_figure(angles, blocked, theta1, theta2),
+                        use_container_width=True, config={"displaylogo": False})
+    st.caption("Blue = collision-free robot link; red = colliding robot link; "
+               "orange = obstacle; dark C-space cells = colliding configurations.")
+    with st.expander("Numerical validation / link-to-obstacle distances"):
+        df = pd.DataFrame([
+            {"Link": i+1, "Obstacle": j+1, "Centerline distance": float(distances[i,j]),
+             "Colliding": bool(distances[i,j] < COLLISION_CLEARANCE)}
+            for i in range(2) for j in range(2)
+        ])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.write(f"Collision threshold: distance < {COLLISION_CLEARANCE:.3f} "
+                 f"({LINK_HALF_WIDTH:.3f} link half-width + "
+                 f"{OBSTACLE_RADIUS:.3f} obstacle radius).")
+        st.markdown("**Standard DH transform from base to end effector**")
+        st.dataframe(pd.DataFrame(pose.transforms[-1]).round(6), hide_index=True)

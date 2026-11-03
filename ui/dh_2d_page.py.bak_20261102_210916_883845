@@ -1,0 +1,312 @@
+"""Editable planar DH lab with the original demonstration's live drag controls.
+
+This is a separate Streamlit page. It deliberately does NOT modify the original
+'demonstration_page.py' or its 'interactive_plot.py' component.
+"""
+from __future__ import annotations
+
+from math import degrees, radians
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from ui.dh_2d_model import (
+    PlanarDH,
+    COLLISION_CLEARANCE,
+    LINK_HALF_WIDTH,
+    OBSTACLE_RADIUS,
+    forward_kinematics,
+    collision_distances,
+)
+from ui.dh_interactive_plot import render_interactive_dh_system
+
+DEFAULT_ROWS = [
+    {"Joint": "1", "Type": "R", "θ (deg)": 0.0, "d": 0.0, "a": 1.0, "α (deg)": 0.0},
+    {"Joint": "2", "Type": "R", "θ (deg)": 0.0, "d": 0.0, "a": 1.0, "α (deg)": 0.0},
+]
+
+DEFAULT_OBSTACLES = ((1.1, 1.1), (1.1, -1.1))
+EDITOR_KEY = "dh2d_grid_editor"
+COMPONENT_KEY = "dh2d_fast_robot_interaction"
+NONCE_KEY = "_last_dh2d_interaction_nonce"
+
+
+def _initial_state() -> None:
+    defaults = {
+        "dh2d_rows": [row.copy() for row in DEFAULT_ROWS],
+        "dh2d_theta1_deg": 0.0,
+        "dh2d_theta2_deg": 0.0,
+        "dh2d_o1x": DEFAULT_OBSTACLES[0][0],
+        "dh2d_o1y": DEFAULT_OBSTACLES[0][1],
+        "dh2d_o2x": DEFAULT_OBSTACLES[1][0],
+        "dh2d_o2y": DEFAULT_OBSTACLES[1][1],
+        "dh2d_quality": 2,
+        "dh2d_show_angle_arcs": True,
+        "dh2d_show_labels": True,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _reset_state() -> None:
+    for key in (
+        "dh2d_rows", "dh2d_theta1_deg", "dh2d_theta2_deg",
+        "dh2d_o1x", "dh2d_o1y", "dh2d_o2x", "dh2d_o2y",
+        "dh2d_quality", "dh2d_show_angle_arcs", "dh2d_show_labels",
+        NONCE_KEY, EDITOR_KEY,
+    ):
+        st.session_state.pop(key, None)
+    _initial_state()
+
+
+def _slider_angles_changed() -> None:
+    """Update the table source before Streamlit renders the editor on rerun."""
+    rows = [row.copy() for row in st.session_state["dh2d_rows"]]
+    rows[0]["θ (deg)"] = float(st.session_state["dh2d_theta1_deg"])
+    rows[1]["θ (deg)"] = float(st.session_state["dh2d_theta2_deg"])
+    st.session_state["dh2d_rows"] = rows
+    # Discard previous table edit-deltas; otherwise they override new angles.
+    st.session_state.pop(EDITOR_KEY, None)
+
+
+def _component_event() -> dict | None:
+    current = st.session_state.get(COMPONENT_KEY)
+    if current is None:
+        return None
+    event = getattr(current, "event", None)
+    if event is None and isinstance(current, dict):
+        event = current.get("event")
+    return event if isinstance(event, dict) else None
+
+
+def _consume_interaction_event() -> None:
+    """Commit one drag event to both the DH table and the precise sliders."""
+    event = _component_event()
+    if not event or event.get("nonce") is None:
+        return
+    if event.get("nonce") == st.session_state.get(NONCE_KEY):
+        return
+    st.session_state[NONCE_KEY] = event["nonce"]
+    try:
+        values = [float(event["theta1"]), float(event["theta2"])]
+        obst1 = [float(value) for value in event["obstacle1"]]
+        obst2 = [float(value) for value in event["obstacle2"]]
+        if len(obst1) != 2 or len(obst2) != 2:
+            return
+        if not np.isfinite(values + obst1 + obst2).all():
+            return
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return
+
+    # Dragging uses [0, 2π]. Keep exact 360 at the C-space right/top boundary.
+    angles = [min(360.0, max(0.0, degrees(value))) for value in values]
+    st.session_state["dh2d_theta1_deg"] = angles[0]
+    st.session_state["dh2d_theta2_deg"] = angles[1]
+    rows = [row.copy() for row in st.session_state["dh2d_rows"]]
+    rows[0]["θ (deg)"] = angles[0]
+    rows[1]["θ (deg)"] = angles[1]
+    st.session_state["dh2d_rows"] = rows
+    st.session_state.pop(EDITOR_KEY, None)
+
+    for prefix, values in (("dh2d_o1", obst1), ("dh2d_o2", obst2)):
+        st.session_state[prefix + "x"] = min(2.0, max(-2.0, values[0]))
+        st.session_state[prefix + "y"] = min(2.0, max(-2.0, values[1]))
+
+
+def _dh_editor() -> tuple[PlanarDH, float, float]:
+    st.subheader("Standard DH Parameters")
+    st.caption(
+        "Edit θ to rotate a joint and a to change its link length. "
+        "Both joints remain revolute; d = 0 and α = 0 are fixed so the robot remains planar."
+    )
+    edited = st.data_editor(
+        pd.DataFrame(st.session_state["dh2d_rows"]),
+        key=EDITOR_KEY,
+        hide_index=True,
+        num_rows="fixed",
+        use_container_width=True,
+        disabled=["Joint", "Type", "d", "α (deg)"],
+        column_config={
+            "Joint": st.column_config.TextColumn("Joint"),
+            "Type": st.column_config.TextColumn("Type"),
+            "θ (deg)": st.column_config.NumberColumn(
+                "θ (deg)", min_value=-360.0, max_value=360.0,
+                step=1.0, format="%.1f",
+            ),
+            "d": st.column_config.NumberColumn("d", format="%.1f"),
+            "a": st.column_config.NumberColumn(
+                "a (length)", min_value=0.1, max_value=5.0,
+                step=0.1, format="%.2f",
+            ),
+            "α (deg)": st.column_config.NumberColumn("α (deg)", format="%.1f"),
+        },
+    )
+    try:
+        rows = edited.to_dict("records")
+        if len(rows) != 2:
+            raise ValueError("Exactly two revolute rows are required.")
+        theta1, theta2 = float(rows[0]["θ (deg)"]), float(rows[1]["θ (deg)"])
+        geometry = PlanarDH(float(rows[0]["a"]), float(rows[1]["a"]))
+        if not np.isfinite([theta1, theta2]).all():
+            raise ValueError("Angles must be finite numbers.")
+        if not all(-360 <= theta <= 360 for theta in (theta1, theta2)):
+            raise ValueError("Joint angles must be between -360° and 360°.")
+        if not all(0.1 <= v <= 5.0 for v in (geometry.a1, geometry.a2)):
+            raise ValueError("Link lengths must be between 0.1 and 5 units.")
+    except (KeyError, ValueError, TypeError, OverflowError) as exc:
+        st.error(f"Invalid DH table: {exc}")
+        st.stop()
+
+    st.session_state["dh2d_rows"] = rows
+    # Synchronize the slider widgets BEFORE they are instantiated below.
+    st.session_state["dh2d_theta1_deg"] = theta1
+    st.session_state["dh2d_theta2_deg"] = theta2
+    return geometry, theta1, theta2
+
+
+def _robot_controls() -> None:
+    with st.container(border=True):
+        st.markdown("### 🤖 Robot Configuration")
+        st.caption("Drag the elbow / end effector / red C-space crosshair, or use precise angles.")
+        st.slider("Joint 1 — θ₁", -360.0, 360.0, step=1.0,
+                  key="dh2d_theta1_deg", format="%.1f°", on_change=_slider_angles_changed)
+        st.slider("Joint 2 — θ₂", -360.0, 360.0, step=1.0,
+                  key="dh2d_theta2_deg", format="%.1f°", on_change=_slider_angles_changed)
+        st.caption(
+            f"Radians: θ₁ = {radians(st.session_state['dh2d_theta1_deg']):.3f}, "
+            f"θ₂ = {radians(st.session_state['dh2d_theta2_deg']):.3f}"
+        )
+
+
+def _obstacle_controls(number: int) -> None:
+    prefix = f"dh2d_o{number}"
+    with st.container(border=True):
+        st.markdown(f"### ⭕ Obstacle {number}")
+        st.caption("Drag this orange circle or adjust its center here.")
+        st.slider("X position", -2.0, 2.0, step=0.05, key=prefix + "x", format="%.2f")
+        st.slider("Y position", -2.0, 2.0, step=0.05, key=prefix + "y", format="%.2f")
+        st.caption(
+            f"Center: ({st.session_state[prefix + 'x']:.2f}, "
+            f"{st.session_state[prefix + 'y']:.2f})"
+        )
+
+
+def _settings_controls() -> None:
+    with st.container(border=True):
+        st.markdown("### ⚙️ Model Settings")
+        st.slider("Configuration-space quality (Q)", 1, 10,
+                  key="dh2d_quality", step=1)
+        q = int(st.session_state["dh2d_quality"])
+        st.caption(f"Live preview: {8*q} × {8*q} • Final: {32*q} × {32*q}")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.toggle("Angle arcs", key="dh2d_show_angle_arcs")
+        with c2:
+            st.toggle("Labels", key="dh2d_show_labels")
+
+
+def _diagnostics(geometry: PlanarDH, theta1_deg: float, theta2_deg: float,
+                 obstacles: tuple[tuple[float, float], tuple[float, float]]) -> None:
+    t1, t2 = radians(theta1_deg), radians(theta2_deg)
+    pose = forward_kinematics(t1, t2, geometry)
+    distances = collision_distances(pose, obstacles)
+    collision = bool(np.any(distances < COLLISION_CLEARANCE))
+    c1, c2 = st.columns([1, 1.25], gap="large")
+    with c1:
+        with st.container(border=True):
+            st.markdown("### Current State")
+            s1, s2 = st.columns(2)
+            with s1:
+                st.metric("Robot state", "COLLISION" if collision else "Collision-free")
+                st.metric("End effector", f"({pose.end_effector[0]:.2f}, {pose.end_effector[1]:.2f})")
+            with s2:
+                st.metric("Joint angles", f"{theta1_deg:.1f}° / {theta2_deg:.1f}°")
+                st.metric("C-space grid", f"{32*int(st.session_state['dh2d_quality'])} × {32*int(st.session_state['dh2d_quality'])}")
+            st.markdown("#### Robot Geometry")
+            st.markdown(
+                f"Base: `({pose.base[0]:.6f}, {pose.base[1]:.6f})`  \n"
+                f"Elbow: `({pose.joint[0]:.6f}, {pose.joint[1]:.6f})`  \n"
+                f"End effector: `({pose.end_effector[0]:.6f}, {pose.end_effector[1]:.6f})`  \n"
+                f"Link lengths: `a₁={geometry.a1:.3f}`, `a₂={geometry.a2:.3f}`  \n"
+                f"Maximum reach: `{geometry.a1 + geometry.a2:.3f}`  \n"
+                f"Minimum reach: `{abs(geometry.a1 - geometry.a2):.3f}`"
+            )
+    with c2:
+        with st.container(border=True):
+            st.markdown("### Numerical Diagnostics")
+            st.markdown("#### Link-to-obstacle distances")
+            st.dataframe(pd.DataFrame([
+                {"Link": i+1, "Obstacle": j+1, "Distance": float(distances[i,j]),
+                 "Collision": bool(distances[i,j] < COLLISION_CLEARANCE)}
+                for i in range(2) for j in range(2)
+            ]), use_container_width=True, hide_index=True)
+            st.caption("Centerline distance < 0.250 marks a collision (0.125 arm half-width + 0.125 obstacle radius).")
+            with st.expander("End-effector homogeneous DH transform"):
+                st.dataframe(pd.DataFrame(pose.transforms[-1]).round(6), hide_index=True)
+
+
+def display_dh_2d_page() -> None:
+    """The original demo's UX with editable standard-DH link lengths and angles."""
+    _initial_state()
+    _consume_interaction_event()
+
+    title, reset_col = st.columns([8, 1])
+    with title:
+        st.title("Robot Motion with Obstacles · DH Editor")
+        st.caption("Assignment 2 | Interactive two-revolute-joint planar DH laboratory")
+    with reset_col:
+        st.write("")
+        st.write("")
+        if st.button("↺ Reset", key="dh2d_reset", use_container_width=True):
+            _reset_state()
+            st.rerun()
+
+    st.write(
+        "Change **θ** and **a** in the DH table, drag the robot or obstacles, "
+        "or click and drag the red configuration-space crosshair. "
+        "All inputs refer to the same 2D robot model."
+    )
+    geometry, theta1_deg, theta2_deg = _dh_editor()
+
+    with st.expander("DH transformation convention and mathematics"):
+        st.latex(r"{}^{i-1}T_i = R_z(\theta_i)\,T_z(d_i)\,T_x(a_i)\,R_x(\alpha_i)")
+        st.latex(r"x_{TCP}=a_1\cos\theta_1+a_2\cos(\theta_1+\theta_2)")
+        st.latex(r"y_{TCP}=a_1\sin\theta_1+a_2\sin(\theta_1+\theta_2)")
+        st.caption("For this planar 2R robot, both d and α are fixed at zero.")
+
+    obstacles = (
+        (float(st.session_state["dh2d_o1x"]), float(st.session_state["dh2d_o1y"])),
+        (float(st.session_state["dh2d_o2x"]), float(st.session_state["dh2d_o2y"])),
+    )
+    st.subheader("Interactive Visualization")
+    render_interactive_dh_system(
+        theta1=radians(theta1_deg),
+        theta2=radians(theta2_deg),
+        a1=geometry.a1,
+        a2=geometry.a2,
+        obstacles=obstacles,
+        quality=int(st.session_state["dh2d_quality"]),
+        show_angle_arcs=bool(st.session_state["dh2d_show_angle_arcs"]),
+        show_labels=bool(st.session_state["dh2d_show_labels"]),
+        key=COMPONENT_KEY,
+    )
+    st.caption(
+        "Changes update both views continuously in your browser. "
+        "During obstacle dragging, C-space uses an 8Q preview and finishes at 32Q."
+    )
+
+    st.subheader("Controls")
+    rcol, o1col, o2col, setcol = st.columns([1.35, 1.0, 1.0, 1.25], gap="medium")
+    with rcol:
+        _robot_controls()
+    with o1col:
+        _obstacle_controls(1)
+    with o2col:
+        _obstacle_controls(2)
+    with setcol:
+        _settings_controls()
+
+    st.subheader("Robot State & Diagnostics")
+    _diagnostics(geometry, theta1_deg, theta2_deg, obstacles)

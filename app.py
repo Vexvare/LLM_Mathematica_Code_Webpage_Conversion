@@ -10,17 +10,19 @@ from streamlit_lottie import st_lottie
 from streamlit_option_menu import option_menu
 
 from ui.demonstration_page import display_demonstration_page
+from ui.dh_2d_page import display_dh_2d_page
 from ui.footer import render_footer
 from ui.help_page import display_help_page
 from ui.home_page import display_home_page
 
 
 APP_TITLE = "Robot Motion with Obstacles"
-PAGES = ("Home", "Demonstration", "Help")
+PAGES = ("Home", "Demonstration", "DH Editor", "Help")
 
 PAGE_ICONS = {
     "Home": "house",
     "Demonstration": "robot",
+    "DH Editor": "table",
     "Help": "question-circle",
 }
 
@@ -198,6 +200,8 @@ def _render_page(active_page: str) -> None:
             display_home_page(navigate=navigate_to)
         elif active_page == "Demonstration":
             display_demonstration_page()
+        elif active_page == "DH Editor":
+            display_dh_2d_page()
         elif active_page == "Help":
             display_help_page(navigate=navigate_to)
 

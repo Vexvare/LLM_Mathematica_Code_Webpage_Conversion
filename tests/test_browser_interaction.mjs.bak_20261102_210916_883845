@@ -1,0 +1,75 @@
+/* Node-based smoke test of the actual browser component without Streamlit.
+   Runs the component against mocked Canvas / DOM objects and simulates pointer
+   moves for each interaction mode. */
+import assert from 'node:assert/strict';
+import setup from './dh_component.mjs';
+
+const noop = () => {};
+const context = new Proxy({
+    createImageData: (w,h) => ({data:new Uint8ClampedArray(w*h*4),width:w,height:h}),
+}, {get(target,p){ return p in target ? target[p] : noop; }, set(target,p,v){target[p]=v;return true;}});
+
+function canvas() {
+    const handlers = new Map();
+    return {
+        width: 600,height:470,
+        handlers,
+        getBoundingClientRect(){return {width:600,height:470,left:0,top:0};},
+        getContext(){return context;},
+        setPointerCapture: noop,
+        addEventListener(type,fn){handlers.set(type,fn);},
+        removeEventListener(type){handlers.delete(type);},
+    };
+}
+const workspace = canvas(), cspace=canvas();
+const grid = {getBoundingClientRect(){return {width:600,height:470};}};
+const root = {querySelector(q){return ({'.rm-grid':grid,'.rm-workspace':workspace,'.rm-cspace':cspace})[q];}};
+globalThis.window={devicePixelRatio:1};
+globalThis.document={createElement(){return canvas();}};
+globalThis.ResizeObserver=class{observe(){}disconnect(){}};
+globalThis.requestAnimationFrame=(fn)=>{fn();return 123;};
+globalThis.cancelAnimationFrame=noop;
+const events=[];
+setup({parentElement:root,
+    data:{theta1:0,theta2:0,obstacles:[[1.1,1.1],[1.1,-1.1]],quality:2,
+        source_compatible:false,show_angle_arcs:true,show_labels:true,
+        geometry:{a1:1.5,a2:0.5,link_half_width:0.125,obstacle_radius:0.125}},
+    setStateValue:(key,value)=>{if(key==='event') events.push(value);},
+});
+function event(target,type,x,y){ const fn=target.handlers.get(type); assert.ok(fn,`${type} missing`);fn({clientX:x,clientY:y,pointerId:9,preventDefault:noop}); }
+// 600×470 canvas with plotting square 396×396, at left=120, top=28.
+const size=396,left=120,top=28,maxReach=2.35;
+const worldToPixel=(x,y)=>({x:left+((x+maxReach)/(2*maxReach))*size,y:top+((maxReach-y)/(2*maxReach))*size});
+const polar=(r,angle)=>[r*Math.cos(angle),r*Math.sin(angle)];
+const near=(a,b,tolerance=0.03)=>assert.ok(Math.abs(a-b)<=tolerance,`${a} != ${b}`);
+const doDrag=(el,start,finish)=>{
+  event(el,'pointerdown',start.x,start.y);
+  event(el,'pointermove',finish.x,finish.y);
+  event(el,'pointerup',finish.x,finish.y);
+  return events.at(-1);
+};
+
+// Elbow follows a1=1.5 (not fixed unit length).
+const e=doDrag(workspace,worldToPixel(1.5,0),worldToPixel(0,1.5));
+assert.equal(e.kind,'elbow');near(e.theta1,Math.PI/2);near(e.theta2,0);
+
+// Drag TCP with unequal link lengths and verify IK returns the right target.
+const target=[1.25,1.0];
+const ik=doDrag(workspace,worldToPixel(0,2.0),worldToPixel(...target));
+assert.equal(ik.kind,'end_effector');
+const tipX=1.5*Math.cos(ik.theta1)+0.5*Math.cos(ik.theta1+ik.theta2);
+const tipY=1.5*Math.sin(ik.theta1)+0.5*Math.sin(ik.theta1+ik.theta2);
+near(tipX,target[0],1e-8);near(tipY,target[1],1e-8);
+
+const obs=doDrag(workspace,worldToPixel(1.1,-1.1),worldToPixel(0.5,-0.75));
+assert.equal(obs.kind,'obstacle2');near(obs.obstacle2[0],0.5);near(obs.obstacle2[1],-0.75);
+
+const q=[Math.PI/4,Math.PI*1.25];
+const cp={x:left+(q[0]/(2*Math.PI))*size,
+          y:top+((2*Math.PI-q[1])/(2*Math.PI))*size};
+event(cspace,'pointerdown',cp.x,cp.y);
+event(cspace,'pointermove',cp.x,cp.y);
+event(cspace,'pointerup',cp.x,cp.y);
+const cs=events.at(-1);
+assert.equal(cs.kind,'configuration');near(cs.theta1,q[0]);near(cs.theta2,q[1]);
+console.log('PASS: simulated elbow, unequal-length TCP IK, obstacle drag, and C-space crosshair');

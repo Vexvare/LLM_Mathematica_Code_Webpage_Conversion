@@ -1,0 +1,1517 @@
+"""High-performance, two-link planar DH robot interaction component.
+
+The workspace and configuration space are rendered together in one Streamlit
+custom component. During a drag, both views update entirely in the browser.
+Python receives the final state only when the interaction is committed.
+
+This keeps the interaction responsive while preserving the Python model as the
+canonical implementation used by the rest of the application.
+"""
+
+from __future__ import annotations
+
+from typing import Iterable
+
+import numpy as np
+import streamlit as st
+
+
+
+_COMPONENT_HTML = """
+<div class="rm-component">
+    <div class="rm-grid">
+        <section class="rm-panel">
+            <div class="rm-panel-title">Robot Workspace</div>
+            <canvas class="rm-workspace"></canvas>
+            <div class="rm-panel-hint">
+                Drag an obstacle, the elbow, or the end effector.
+            </div>
+        </section>
+
+        <section class="rm-panel">
+            <div class="rm-panel-title">Configuration Space</div>
+            <canvas class="rm-cspace"></canvas>
+            <div class="rm-panel-hint">
+                Click or drag the red crosshair to move the robot.
+            </div>
+        </section>
+    </div>
+</div>
+"""
+
+
+_COMPONENT_CSS = """
+.rm-component {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.rm-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1rem;
+    width: 100%;
+}
+
+.rm-panel {
+    min-width: 0;
+    border: 1px solid rgba(128, 128, 128, 0.20);
+    border-radius: 0.75rem;
+    padding: 0.75rem;
+    box-sizing: border-box;
+    background: var(--st-background-color, #ffffff);
+}
+
+.rm-panel-title {
+    text-align: center;
+    font-family: sans-serif;
+    font-weight: 700;
+    font-size: 0.98rem;
+    margin: 0.05rem 0 0.4rem 0;
+}
+
+.rm-panel-hint {
+    text-align: center;
+    font-family: sans-serif;
+    font-size: 0.76rem;
+    opacity: 0.68;
+    margin-top: 0.35rem;
+    line-height: 1.3;
+}
+
+.rm-workspace,
+.rm-cspace {
+    display: block;
+    width: 100%;
+    height: 470px;
+    min-width: 0;
+    border-radius: 0.45rem;
+    background: #ffffff;
+    touch-action: none;
+    user-select: none;
+}
+
+.rm-workspace {
+    cursor: default;
+}
+
+.rm-cspace {
+    cursor: crosshair;
+}
+"""
+
+
+_COMPONENT_JS = r"""
+export default function(component) {
+    const {
+        parentElement,
+        data,
+        setStateValue,
+    } = component;
+
+    const grid = parentElement.querySelector(".rm-grid");
+    const workspaceCanvas = parentElement.querySelector(".rm-workspace");
+    const cspaceCanvas = parentElement.querySelector(".rm-cspace");
+
+    if (!grid || !workspaceCanvas || !cspaceCanvas) {
+        throw new Error("Robot interaction component could not find its rendering elements.");
+    }
+
+    if (parentElement.__rmCleanup) {
+        parentElement.__rmCleanup();
+    }
+
+    const TWO_PI = Math.PI * 2.0;
+
+    const geometry = {
+        link1: Number(data.geometry?.a1 ?? 1.0),
+        link2: Number(data.geometry?.a2 ?? 1.0),
+        linkHalfWidth: Number(data.geometry?.link_half_width ?? 0.125),
+        obstacleRadius: Number(data.geometry?.obstacle_radius ?? 0.125),
+    };
+
+    // Automatically expand the Cartesian view for long arms; leave the
+    // two original obstacle controls in [-2, 2] to match the demonstration.
+    const WORKSPACE_MAX = Math.max(2.2, geometry.link1 + geometry.link2 + 0.35);
+    const WORKSPACE_MIN = -WORKSPACE_MAX;
+
+    geometry.clearance =
+        geometry.linkHalfWidth + geometry.obstacleRadius;
+
+    const state = {
+        theta1: wrap(Number(data.theta1 ?? 0)),
+        theta2: wrap(Number(data.theta2 ?? 0)),
+        obstacles: (data.obstacles ?? [[1.1, 1.1], [1.1, -1.1]])
+            .map((point) => [Number(point[0]), Number(point[1])]),
+        quality: Math.max(1, Math.min(10, Number(data.quality ?? 2))),
+        sourceCompatible: false,
+        showAngleArcs: Boolean(data.show_angle_arcs ?? true),
+        showLabels: Boolean(data.show_labels ?? true),
+        cspaceRaster: null,
+        cspaceResolution: 0,
+        cspacePreview: false,
+        workspaceGeom: null,
+        cspaceGeom: null,
+        workspaceDrag: null,
+        cspaceDragging: false,
+        previewFrame: null,
+        destroyed: false,
+    };
+
+    const colors = {
+        background: "#ffffff",
+        grid: "#e5e7eb",
+        axis: "#64748b",
+        text: "#334155",
+        robot: "#59636e",
+        robotCollision: "#d62728",
+        joint: "#111827",
+        endEffector: "#7c3aed",
+        elbow: "#2563eb",
+        obstacleFill: "rgba(249, 115, 22, 0.45)",
+        obstacleStroke: "#c2410c",
+        obstacleLabel: "#9a3412",
+        free: [248, 250, 252, 255],
+        collision: [51, 65, 85, 255],
+        crosshair: "#dc2626",
+        angleArc: "#64748b",
+    };
+
+    function wrap(angle) {
+        const value = angle % TWO_PI;
+        return value < 0 ? value + TWO_PI : value;
+    }
+
+    function angularDistance(a, b) {
+        let delta = wrap(a) - wrap(b);
+        delta = (delta + Math.PI) % TWO_PI - Math.PI;
+        return Math.abs(delta);
+    }
+
+    function clamp(value, minimum, maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    function configureCanvas(canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.max(1, rect.width);
+        const height = Math.max(1, rect.height);
+
+        const pixelWidth = Math.max(1, Math.round(width * dpr));
+        const pixelHeight = Math.max(1, Math.round(height * dpr));
+
+        if (
+            canvas.width !== pixelWidth ||
+            canvas.height !== pixelHeight
+        ) {
+            canvas.width = pixelWidth;
+            canvas.height = pixelHeight;
+        }
+
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        return {
+            ctx,
+            width,
+            height,
+            dpr,
+        };
+    }
+
+    function squarePlotGeometry(canvasInfo) {
+        const leftMargin = 54;
+        const rightMargin = 18;
+        const topMargin = 28;
+        const bottomMargin = 46;
+
+        const availableWidth =
+            canvasInfo.width - leftMargin - rightMargin;
+        const availableHeight =
+            canvasInfo.height - topMargin - bottomMargin;
+
+        const size = Math.max(
+            40,
+            Math.min(availableWidth, availableHeight),
+        );
+
+        const left =
+            leftMargin + Math.max(0, (availableWidth - size) / 2.0);
+        const top =
+            topMargin + Math.max(0, (availableHeight - size) / 2.0);
+
+        return {
+            left,
+            top,
+            size,
+            right: left + size,
+            bottom: top + size,
+        };
+    }
+
+    function workspaceToPixel(x, y, geom) {
+        const span = WORKSPACE_MAX - WORKSPACE_MIN;
+
+        return {
+            x:
+                geom.left +
+                ((x - WORKSPACE_MIN) / span) * geom.size,
+            y:
+                geom.top +
+                ((WORKSPACE_MAX - y) / span) * geom.size,
+        };
+    }
+
+    function workspaceFromPixel(px, py, geom) {
+        const span = WORKSPACE_MAX - WORKSPACE_MIN;
+
+        return {
+            x:
+                WORKSPACE_MIN +
+                ((px - geom.left) / geom.size) * span,
+            y:
+                WORKSPACE_MAX -
+                ((py - geom.top) / geom.size) * span,
+        };
+    }
+
+    function cspaceToPixel(theta1, theta2, geom) {
+        const t1 = clamp(Number(theta1), 0, TWO_PI);
+        const t2 = clamp(Number(theta2), 0, TWO_PI);
+
+        return {
+            x: geom.left + (t1 / TWO_PI) * geom.size,
+            y:
+                geom.top +
+                ((TWO_PI - t2) / TWO_PI) * geom.size,
+        };
+    }
+
+    function cspaceFromPixel(px, py, geom) {
+        return {
+            theta1: clamp(
+                ((px - geom.left) / geom.size) * TWO_PI,
+                0,
+                TWO_PI,
+            ),
+            theta2: clamp(
+                ((geom.bottom - py) / geom.size) * TWO_PI,
+                0,
+                TWO_PI,
+            ),
+        };
+    }
+
+    function pointSegmentDistanceSquared(px, py, ax, ay, bx, by) {
+        const abx = bx - ax;
+        const aby = by - ay;
+        const lengthSquared = abx * abx + aby * aby;
+
+        if (lengthSquared <= 1e-15) {
+            const dx = px - ax;
+            const dy = py - ay;
+            return dx * dx + dy * dy;
+        }
+
+        let t =
+            ((px - ax) * abx + (py - ay) * aby) /
+            lengthSquared;
+
+        t = clamp(t, 0, 1);
+
+        const nx = ax + t * abx;
+        const ny = ay + t * aby;
+        const dx = px - nx;
+        const dy = py - ny;
+
+        return dx * dx + dy * dy;
+    }
+
+    function forwardKinematics(theta1, theta2) {
+        const jointX = geometry.link1 * Math.cos(theta1);
+        const jointY = geometry.link1 * Math.sin(theta1);
+
+        const secondAngle = theta1 + theta2;
+
+        return {
+            base: [0, 0],
+            joint: [jointX, jointY],
+            end: [
+                jointX + geometry.link2 * Math.cos(secondAngle),
+                jointY + geometry.link2 * Math.sin(secondAngle),
+            ],
+        };
+    }
+
+    function currentCollision() {
+        const pose = forwardKinematics(
+            state.theta1,
+            state.theta2,
+        );
+
+        const clearanceSquared =
+            geometry.clearance * geometry.clearance;
+
+        for (const obstacle of state.obstacles) {
+            const [ox, oy] = obstacle;
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    0,
+                    0,
+                    pose.joint[0],
+                    pose.joint[1],
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    pose.joint[0],
+                    pose.joint[1],
+                    pose.end[0],
+                    pose.end[1],
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function inverseKinematics(x, y) {
+        const l1 = geometry.link1;
+        const l2 = geometry.link2;
+
+        let targetX = Number(x);
+        let targetY = Number(y);
+
+        let radius = Math.hypot(targetX, targetY);
+        const maxReach = l1 + l2;
+        const minReach = Math.abs(l1 - l2);
+
+        if (radius > maxReach && radius > 0) {
+            const scale = maxReach / radius;
+            targetX *= scale;
+            targetY *= scale;
+            radius = maxReach;
+        } else if (radius < minReach) {
+            if (radius > 0) {
+                const scale = minReach / radius;
+                targetX *= scale;
+                targetY *= scale;
+            } else {
+                targetX = minReach;
+                targetY = 0;
+            }
+
+            radius = minReach;
+        }
+
+        const r2 =
+            targetX * targetX + targetY * targetY;
+
+        const cosTheta2 = clamp(
+            (r2 - l1 * l1 - l2 * l2) /
+                (2 * l1 * l2),
+            -1,
+            1,
+        );
+
+        const magnitude = Math.acos(cosTheta2);
+        const candidates = [magnitude, -magnitude];
+
+        let best = null;
+
+        for (const theta2Candidate of candidates) {
+            const theta1Candidate =
+                Math.atan2(targetY, targetX) -
+                Math.atan2(
+                    l2 * Math.sin(theta2Candidate),
+                    l1 + l2 * Math.cos(theta2Candidate),
+                );
+
+            const t1 = wrap(theta1Candidate);
+            const t2 = wrap(theta2Candidate);
+
+            const score =
+                angularDistance(t1, state.theta1) +
+                angularDistance(t2, state.theta2);
+
+            if (!best || score < best.score) {
+                best = {
+                    score,
+                    theta1: t1,
+                    theta2: t2,
+                };
+            }
+        }
+
+        return best;
+    }
+
+    function cspaceCollision(
+        jointX,
+        jointY,
+        endX,
+        endY,
+    ) {
+        const clearanceSquared =
+            geometry.clearance * geometry.clearance;
+
+        for (const obstacle of state.obstacles) {
+            const ox = obstacle[0];
+            const oy = obstacle[1];
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    0,
+                    0,
+                    jointX,
+                    jointY,
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
+
+            if (
+                pointSegmentDistanceSquared(
+                    ox,
+                    oy,
+                    jointX,
+                    jointY,
+                    endX,
+                    endY,
+                ) < clearanceSquared
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function computeCspace(resolution, preview) {
+        const offscreen = document.createElement("canvas");
+        offscreen.width = resolution;
+        offscreen.height = resolution;
+
+        const ctx = offscreen.getContext("2d");
+        const image = ctx.createImageData(
+            resolution,
+            resolution,
+        );
+
+        const l1 = geometry.link1;
+        const l2 = geometry.link2;
+
+        const cos1 = new Float64Array(resolution);
+        const sin1 = new Float64Array(resolution);
+        const cos2 = new Float64Array(resolution);
+        const sin2 = new Float64Array(resolution);
+
+        for (let i = 0; i < resolution; i += 1) {
+            const angle =
+                (i + 0.5) * (TWO_PI / resolution);
+
+            cos1[i] = Math.cos(angle);
+            sin1[i] = Math.sin(angle);
+            cos2[i] = Math.cos(angle);
+            sin2[i] = Math.sin(angle);
+        }
+
+        const free = colors.free;
+        const collision = colors.collision;
+
+        for (let j = 0; j < resolution; j += 1) {
+            for (let i = 0; i < resolution; i += 1) {
+                const jointX = l1 * cos1[i];
+                const jointY = l1 * sin1[i];
+
+                let secondCos;
+                let secondSin;
+
+                if (state.sourceCompatible) {
+                    // cos(theta1 - theta2), sin(theta1 - theta2)
+                    secondCos =
+                        cos1[i] * cos2[j] +
+                        sin1[i] * sin2[j];
+                    secondSin =
+                        sin1[i] * cos2[j] -
+                        cos1[i] * sin2[j];
+                } else {
+                    // cos(theta1 + theta2), sin(theta1 + theta2)
+                    secondCos =
+                        cos1[i] * cos2[j] -
+                        sin1[i] * sin2[j];
+                    secondSin =
+                        sin1[i] * cos2[j] +
+                        cos1[i] * sin2[j];
+                }
+
+                const endX =
+                    jointX + l2 * secondCos;
+                const endY =
+                    jointY + l2 * secondSin;
+
+                const collides = cspaceCollision(
+                    jointX,
+                    jointY,
+                    endX,
+                    endY,
+                );
+
+                // theta2 increases upward in the displayed coordinate system.
+                const row = resolution - 1 - j;
+                const index = (row * resolution + i) * 4;
+                const rgba = collides ? collision : free;
+
+                image.data[index] = rgba[0];
+                image.data[index + 1] = rgba[1];
+                image.data[index + 2] = rgba[2];
+                image.data[index + 3] = rgba[3];
+            }
+        }
+
+        ctx.putImageData(image, 0, 0);
+
+        state.cspaceRaster = offscreen;
+        state.cspaceResolution = resolution;
+        state.cspacePreview = preview;
+    }
+
+    function drawAxes(
+        ctx,
+        geom,
+        xTicks,
+        yTicks,
+        xLabel,
+        yLabel,
+    ) {
+        ctx.save();
+
+        ctx.strokeStyle = colors.grid;
+        ctx.lineWidth = 1;
+        ctx.fillStyle = colors.text;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+
+        for (const tick of xTicks) {
+            const x = tick.pixel;
+
+            ctx.beginPath();
+            ctx.moveTo(x, geom.top);
+            ctx.lineTo(x, geom.bottom);
+            ctx.stroke();
+
+            ctx.fillText(
+                tick.label,
+                x,
+                geom.bottom + 7,
+            );
+        }
+
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+
+        for (const tick of yTicks) {
+            const y = tick.pixel;
+
+            ctx.beginPath();
+            ctx.moveTo(geom.left, y);
+            ctx.lineTo(geom.right, y);
+            ctx.stroke();
+
+            ctx.fillText(
+                tick.label,
+                geom.left - 8,
+                y,
+            );
+        }
+
+        ctx.strokeStyle = colors.axis;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(
+            geom.left,
+            geom.top,
+            geom.size,
+            geom.size,
+        );
+
+        ctx.fillStyle = colors.text;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+
+        ctx.fillText(
+            xLabel,
+            geom.left + geom.size / 2,
+            geom.bottom + 42,
+        );
+
+        ctx.save();
+        ctx.translate(
+            geom.left - 42,
+            geom.top + geom.size / 2,
+        );
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(yLabel, 0, 0);
+        ctx.restore();
+
+        ctx.restore();
+    }
+
+    function drawWorkspace() {
+        if (state.destroyed) {
+            return;
+        }
+
+        const canvasInfo = configureCanvas(
+            workspaceCanvas,
+        );
+        const {ctx, width, height} = canvasInfo;
+        const geom = squarePlotGeometry(canvasInfo);
+        state.workspaceGeom = geom;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = colors.background;
+        ctx.fillRect(0, 0, width, height);
+
+        // Tick spacing adjusts to the editable lengths, so the arm remains
+        // readable even when the user sets a1 or a2 to their 5-unit maximum.
+        const tickStep = WORKSPACE_MAX > 6 ? 2 : WORKSPACE_MAX > 3 ? 1 : 1;
+        const tickMax = Math.floor(WORKSPACE_MAX / tickStep) * tickStep;
+        const tickValues = [];
+        for (let value = -tickMax; value <= tickMax + 1e-8; value += tickStep) {
+            tickValues.push(value);
+        }
+
+        drawAxes(
+            ctx,
+            geom,
+            tickValues.map((value) => ({
+                label: String(value),
+                pixel: workspaceToPixel(
+                    value,
+                    0,
+                    geom,
+                ).x,
+            })),
+            tickValues.map((value) => ({
+                label: String(value),
+                pixel: workspaceToPixel(
+                    0,
+                    value,
+                    geom,
+                ).y,
+            })),
+            "x",
+            "y",
+        );
+
+        const scale =
+            geom.size /
+            (WORKSPACE_MAX - WORKSPACE_MIN);
+
+        const obstacleRadiusPx =
+            geometry.obstacleRadius * scale;
+
+        for (
+            let index = 0;
+            index < state.obstacles.length;
+            index += 1
+        ) {
+            const obstacle = state.obstacles[index];
+            const pixel = workspaceToPixel(
+                obstacle[0],
+                obstacle[1],
+                geom,
+            );
+
+            ctx.beginPath();
+            ctx.arc(
+                pixel.x,
+                pixel.y,
+                obstacleRadiusPx,
+                0,
+                TWO_PI,
+            );
+            ctx.fillStyle = colors.obstacleFill;
+            ctx.fill();
+            ctx.strokeStyle = colors.obstacleStroke;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            if (state.showLabels) {
+                ctx.fillStyle = colors.obstacleLabel;
+                ctx.font = "600 12px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "bottom";
+                ctx.fillText(
+                    `O${index + 1}`,
+                    pixel.x,
+                    pixel.y - obstacleRadiusPx - 7,
+                );
+            }
+        }
+
+        const pose = forwardKinematics(
+            state.theta1,
+            state.theta2,
+        );
+
+        const basePx = workspaceToPixel(
+            pose.base[0],
+            pose.base[1],
+            geom,
+        );
+        const jointPx = workspaceToPixel(
+            pose.joint[0],
+            pose.joint[1],
+            geom,
+        );
+        const endPx = workspaceToPixel(
+            pose.end[0],
+            pose.end[1],
+            geom,
+        );
+
+        const collision = currentCollision();
+        const linkColor = collision
+            ? colors.robotCollision
+            : colors.robot;
+
+        ctx.save();
+        ctx.strokeStyle = linkColor;
+        ctx.lineWidth =
+            2 * geometry.linkHalfWidth * scale;
+        ctx.lineCap = "round";
+
+        ctx.beginPath();
+        ctx.moveTo(basePx.x, basePx.y);
+        ctx.lineTo(jointPx.x, jointPx.y);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(jointPx.x, jointPx.y);
+        ctx.lineTo(endPx.x, endPx.y);
+        ctx.stroke();
+        ctx.restore();
+
+        // Base.
+        ctx.beginPath();
+        ctx.arc(basePx.x, basePx.y, 6, 0, TWO_PI);
+        ctx.fillStyle = colors.joint;
+        ctx.fill();
+
+        // Elbow drag ring.
+        ctx.beginPath();
+        ctx.arc(jointPx.x, jointPx.y, 10, 0, TWO_PI);
+        ctx.fillStyle = "rgba(37, 99, 235, 0.14)";
+        ctx.fill();
+        ctx.strokeStyle = colors.elbow;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // End-effector drag ring.
+        ctx.beginPath();
+        ctx.arc(endPx.x, endPx.y, 11, 0, TWO_PI);
+        ctx.fillStyle = "rgba(124, 58, 237, 0.16)";
+        ctx.fill();
+        ctx.strokeStyle = colors.endEffector;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        if (state.showAngleArcs) {
+            ctx.save();
+            ctx.strokeStyle = colors.angleArc;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 3]);
+
+            const arc1Radius = 0.35 * scale;
+            ctx.beginPath();
+            ctx.arc(
+                basePx.x,
+                basePx.y,
+                arc1Radius,
+                -state.theta1,
+                0,
+                false,
+            );
+            ctx.stroke();
+
+            const arc2Radius = 0.28 * scale;
+            const start = -state.theta1;
+            const end = -(state.theta1 + state.theta2);
+            ctx.beginPath();
+            ctx.arc(
+                jointPx.x,
+                jointPx.y,
+                arc2Radius,
+                start,
+                end,
+                state.theta2 > Math.PI,
+            );
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
+        ctx.save();
+        ctx.font = "700 12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillStyle = collision
+            ? colors.robotCollision
+            : "#166534";
+
+        ctx.fillText(
+            collision ? "COLLISION" : "Collision-free",
+            geom.left + 8,
+            geom.top + 8,
+        );
+        ctx.restore();
+    }
+
+    function drawCspace() {
+        if (state.destroyed) {
+            return;
+        }
+
+        const canvasInfo = configureCanvas(cspaceCanvas);
+        const {ctx, width, height} = canvasInfo;
+        const geom = squarePlotGeometry(canvasInfo);
+        state.cspaceGeom = geom;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = colors.background;
+        ctx.fillRect(0, 0, width, height);
+
+        const tickValues = [
+            {value: 0, label: "0"},
+            {value: Math.PI / 2, label: "π/2"},
+            {value: Math.PI, label: "π"},
+            {value: 3 * Math.PI / 2, label: "3π/2"},
+            {value: TWO_PI, label: "2π"},
+        ];
+
+        drawAxes(
+            ctx,
+            geom,
+            tickValues.map((tick) => ({
+                label: tick.label,
+                pixel:
+                    geom.left +
+                    (tick.value / TWO_PI) * geom.size,
+            })),
+            tickValues.map((tick) => ({
+                label: tick.label,
+                pixel:
+                    geom.bottom -
+                    (tick.value / TWO_PI) * geom.size,
+            })),
+            "θ₁",
+            "θ₂",
+        );
+
+        if (state.cspaceRaster) {
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(
+                state.cspaceRaster,
+                geom.left,
+                geom.top,
+                geom.size,
+                geom.size,
+            );
+        }
+
+        const crosshair = cspaceToPixel(
+            state.theta1,
+            state.theta2,
+            geom,
+        );
+
+        ctx.save();
+        ctx.strokeStyle = colors.crosshair;
+        ctx.lineWidth = 2.5;
+
+        ctx.beginPath();
+        ctx.moveTo(crosshair.x - 10, crosshair.y);
+        ctx.lineTo(crosshair.x + 10, crosshair.y);
+        ctx.moveTo(crosshair.x, crosshair.y - 10);
+        ctx.lineTo(crosshair.x, crosshair.y + 10);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(
+            crosshair.x,
+            crosshair.y,
+            4,
+            0,
+            TWO_PI,
+        );
+        ctx.fillStyle = colors.crosshair;
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = colors.text;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "top";
+
+        const label = state.cspacePreview
+            ? `${state.cspaceResolution} × ${state.cspaceResolution} preview`
+            : `${state.cspaceResolution} × ${state.cspaceResolution}`;
+
+        ctx.fillText(
+            label,
+            geom.right - 5,
+            geom.top + 6,
+        );
+        ctx.restore();
+    }
+
+    function pointerPosition(event, canvas) {
+        const rect = canvas.getBoundingClientRect();
+
+        return {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top,
+        };
+    }
+
+    function distancePixels(a, b) {
+        return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function workspaceHitTest(position) {
+        const geom = state.workspaceGeom;
+
+        if (!geom) {
+            return null;
+        }
+
+        const pose = forwardKinematics(
+            state.theta1,
+            state.theta2,
+        );
+
+        const jointPx = workspaceToPixel(
+            pose.joint[0],
+            pose.joint[1],
+            geom,
+        );
+        const endPx = workspaceToPixel(
+            pose.end[0],
+            pose.end[1],
+            geom,
+        );
+
+        if (distancePixels(position, endPx) <= 16) {
+            return {
+                kind: "end_effector",
+            };
+        }
+
+        if (distancePixels(position, jointPx) <= 16) {
+            return {
+                kind: "elbow",
+            };
+        }
+
+        const scale =
+            geom.size /
+            (WORKSPACE_MAX - WORKSPACE_MIN);
+
+        const obstacleHitRadius = Math.max(
+            12,
+            geometry.obstacleRadius * scale + 5,
+        );
+
+        for (
+            let index = 0;
+            index < state.obstacles.length;
+            index += 1
+        ) {
+            const obstaclePx = workspaceToPixel(
+                state.obstacles[index][0],
+                state.obstacles[index][1],
+                geom,
+            );
+
+            if (
+                distancePixels(position, obstaclePx) <=
+                obstacleHitRadius
+            ) {
+                return {
+                    kind: "obstacle",
+                    index,
+                };
+            }
+        }
+
+        return null;
+    }
+
+    function scheduleCspacePreview() {
+        if (state.previewFrame !== null) {
+            return;
+        }
+
+        state.previewFrame = requestAnimationFrame(() => {
+            state.previewFrame = null;
+
+            if (state.destroyed) {
+                return;
+            }
+
+            computeCspace(
+                8 * state.quality,
+                true,
+            );
+            drawCspace();
+        });
+    }
+
+    function emitState(kind) {
+        setStateValue("event", {
+            kind,
+            theta1: Number(state.theta1),
+            theta2: Number(state.theta2),
+            obstacle1: [
+                Number(state.obstacles[0][0]),
+                Number(state.obstacles[0][1]),
+            ],
+            obstacle2: [
+                Number(state.obstacles[1][0]),
+                Number(state.obstacles[1][1]),
+            ],
+            nonce: Date.now(),
+        });
+    }
+
+    function workspacePointerDown(event) {
+        const position = pointerPosition(
+            event,
+            workspaceCanvas,
+        );
+
+        const hit = workspaceHitTest(position);
+
+        if (!hit) {
+            return;
+        }
+
+        event.preventDefault();
+
+        state.workspaceDrag = {
+            pointerId: event.pointerId,
+            ...hit,
+        };
+
+        workspaceCanvas.setPointerCapture?.(
+            event.pointerId,
+        );
+    }
+
+    function workspacePointerMove(event) {
+        const drag = state.workspaceDrag;
+
+        if (
+            !drag ||
+            drag.pointerId !== event.pointerId ||
+            !state.workspaceGeom
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const position = pointerPosition(
+            event,
+            workspaceCanvas,
+        );
+
+        const point = workspaceFromPixel(
+            position.x,
+            position.y,
+            state.workspaceGeom,
+        );
+
+        if (drag.kind === "obstacle") {
+            state.obstacles[drag.index][0] = clamp(
+                point.x,
+                -2,
+                2,
+            );
+            state.obstacles[drag.index][1] = clamp(
+                point.y,
+                -2,
+                2,
+            );
+
+            drawWorkspace();
+            scheduleCspacePreview();
+            return;
+        }
+
+        if (drag.kind === "elbow") {
+            state.theta1 = wrap(
+                Math.atan2(point.y, point.x),
+            );
+
+            drawWorkspace();
+            drawCspace();
+            return;
+        }
+
+        if (drag.kind === "end_effector") {
+            const solution = inverseKinematics(
+                point.x,
+                point.y,
+            );
+
+            state.theta1 = solution.theta1;
+            state.theta2 = solution.theta2;
+
+            drawWorkspace();
+            drawCspace();
+        }
+    }
+
+    function workspacePointerUp(event) {
+        const drag = state.workspaceDrag;
+
+        if (
+            !drag ||
+            drag.pointerId !== event.pointerId
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        state.workspaceDrag = null;
+
+        if (drag.kind === "obstacle") {
+            if (state.previewFrame !== null) {
+                cancelAnimationFrame(state.previewFrame);
+                state.previewFrame = null;
+            }
+
+            computeCspace(
+                32 * state.quality,
+                false,
+            );
+            drawCspace();
+
+            emitState(
+                drag.index === 0
+                    ? "obstacle1"
+                    : "obstacle2",
+            );
+            return;
+        }
+
+        emitState(drag.kind);
+    }
+
+    function cspaceUpdateFromPointer(event) {
+        if (!state.cspaceGeom) {
+            return;
+        }
+
+        const position = pointerPosition(
+            event,
+            cspaceCanvas,
+        );
+
+        const geom = state.cspaceGeom;
+
+        const x = clamp(
+            position.x,
+            geom.left,
+            geom.right,
+        );
+        const y = clamp(
+            position.y,
+            geom.top,
+            geom.bottom,
+        );
+
+        const angles = cspaceFromPixel(
+            x,
+            y,
+            geom,
+        );
+
+        // Preserve an exact 2π value at the top/right C-space boundary so the
+        // crosshair remains where the user placed it. Trigonometric kinematics
+        // naturally treat 2π as equivalent to 0.
+        state.theta1 = angles.theta1;
+        state.theta2 = angles.theta2;
+
+        drawWorkspace();
+        drawCspace();
+    }
+
+    function cspacePointerDown(event) {
+        if (!state.cspaceGeom) {
+            return;
+        }
+
+        const position = pointerPosition(
+            event,
+            cspaceCanvas,
+        );
+
+        const geom = state.cspaceGeom;
+
+        if (
+            position.x < geom.left ||
+            position.x > geom.right ||
+            position.y < geom.top ||
+            position.y > geom.bottom
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        state.cspaceDragging = true;
+        cspaceCanvas.setPointerCapture?.(
+            event.pointerId,
+        );
+
+        cspaceUpdateFromPointer(event);
+    }
+
+    function cspacePointerMove(event) {
+        if (!state.cspaceDragging) {
+            return;
+        }
+
+        event.preventDefault();
+        cspaceUpdateFromPointer(event);
+    }
+
+    function cspacePointerUp(event) {
+        if (!state.cspaceDragging) {
+            return;
+        }
+
+        event.preventDefault();
+        cspaceUpdateFromPointer(event);
+
+        state.cspaceDragging = false;
+        emitState("configuration");
+    }
+
+    function fullRender() {
+        if (state.destroyed) {
+            return;
+        }
+
+        computeCspace(
+            32 * state.quality,
+            false,
+        );
+        drawWorkspace();
+        drawCspace();
+    }
+
+    workspaceCanvas.addEventListener(
+        "pointerdown",
+        workspacePointerDown,
+    );
+    workspaceCanvas.addEventListener(
+        "pointermove",
+        workspacePointerMove,
+    );
+    workspaceCanvas.addEventListener(
+        "pointerup",
+        workspacePointerUp,
+    );
+    workspaceCanvas.addEventListener(
+        "pointercancel",
+        workspacePointerUp,
+    );
+
+    cspaceCanvas.addEventListener(
+        "pointerdown",
+        cspacePointerDown,
+    );
+    cspaceCanvas.addEventListener(
+        "pointermove",
+        cspacePointerMove,
+    );
+    cspaceCanvas.addEventListener(
+        "pointerup",
+        cspacePointerUp,
+    );
+    cspaceCanvas.addEventListener(
+        "pointercancel",
+        cspacePointerUp,
+    );
+
+    let previousWorkspaceWidth =
+        workspaceCanvas.getBoundingClientRect().width;
+    let previousCspaceWidth =
+        cspaceCanvas.getBoundingClientRect().width;
+
+    const resizeObserver =
+        typeof ResizeObserver !== "undefined"
+            ? new ResizeObserver(() => {
+                  const workspaceWidth =
+                      workspaceCanvas.getBoundingClientRect().width;
+                  const cspaceWidth =
+                      cspaceCanvas.getBoundingClientRect().width;
+
+                  if (
+                      Math.abs(
+                          workspaceWidth -
+                              previousWorkspaceWidth,
+                      ) < 1 &&
+                      Math.abs(
+                          cspaceWidth -
+                              previousCspaceWidth,
+                      ) < 1
+                  ) {
+                      return;
+                  }
+
+                  previousWorkspaceWidth =
+                      workspaceWidth;
+                  previousCspaceWidth =
+                      cspaceWidth;
+
+                  requestAnimationFrame(() => {
+                      drawWorkspace();
+                      drawCspace();
+                  });
+              })
+            : null;
+
+    // Streamlit v2 may provide parentElement as a ShadowRoot rather than an
+    // HTMLElement. ResizeObserver.observe() requires an actual Element, so
+    // observe the component's grid container instead.
+    resizeObserver?.observe(grid);
+
+    fullRender();
+
+    const cleanup = () => {
+        state.destroyed = true;
+
+        if (state.previewFrame !== null) {
+            cancelAnimationFrame(state.previewFrame);
+            state.previewFrame = null;
+        }
+
+        resizeObserver?.disconnect();
+
+        workspaceCanvas.removeEventListener(
+            "pointerdown",
+            workspacePointerDown,
+        );
+        workspaceCanvas.removeEventListener(
+            "pointermove",
+            workspacePointerMove,
+        );
+        workspaceCanvas.removeEventListener(
+            "pointerup",
+            workspacePointerUp,
+        );
+        workspaceCanvas.removeEventListener(
+            "pointercancel",
+            workspacePointerUp,
+        );
+
+        cspaceCanvas.removeEventListener(
+            "pointerdown",
+            cspacePointerDown,
+        );
+        cspaceCanvas.removeEventListener(
+            "pointermove",
+            cspacePointerMove,
+        );
+        cspaceCanvas.removeEventListener(
+            "pointerup",
+            cspacePointerUp,
+        );
+        cspaceCanvas.removeEventListener(
+            "pointercancel",
+            cspacePointerUp,
+        );
+    };
+
+    parentElement.__rmCleanup = cleanup;
+
+    return cleanup;
+}
+"""
+
+
+_interactive_robot = st.components.v2.component(
+    "robot_motion_dh_interaction",
+    html=_COMPONENT_HTML,
+    css=_COMPONENT_CSS,
+    js=_COMPONENT_JS,
+)
+
+
+def render_interactive_dh_system(
+    *,
+    theta1: float,
+    theta2: float,
+    obstacles: Iterable[Iterable[float]],
+    quality: int,
+    a1: float,
+    a2: float,
+    show_angle_arcs: bool,
+    show_labels: bool,
+    key: str,
+):
+    """Render the synchronized workspace and C-space interaction component."""
+    obstacle_array = np.asarray(tuple(obstacles), dtype=float)
+
+    if not np.isfinite([a1, a2]).all() or a1 <= 0 or a2 <= 0:
+        raise ValueError("DH link lengths must be finite and positive")
+    if obstacle_array.shape != (2, 2):
+        raise ValueError(
+            "interactive view requires exactly two 2D obstacle centers"
+        )
+
+    return _interactive_robot(
+        data={
+            "theta1": float(theta1),
+            "theta2": float(theta2),
+            "obstacles": obstacle_array.tolist(),
+            "quality": int(quality),
+            "source_compatible": False,
+            "show_angle_arcs": bool(show_angle_arcs),
+            "show_labels": bool(show_labels),
+            "geometry": {
+                "a1": float(a1),
+                "a2": float(a2),
+                "link_half_width": 0.125,
+                "obstacle_radius": 0.125,
+            },
+        },
+        default={"event": None},
+        key=key,
+        on_event_change=lambda: None,
+        width="stretch",
+        height=550,
+    )
