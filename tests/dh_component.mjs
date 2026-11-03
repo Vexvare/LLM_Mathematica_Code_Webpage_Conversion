@@ -1,3 +1,4 @@
+
 export default function(component) {
   const {parentElement, data, setStateValue} = component;
   const grid = parentElement.querySelector('.rm-grid');
@@ -10,12 +11,26 @@ export default function(component) {
   const wrap = x=>((x%TAU)+TAU)%TAU;
   const MAX_VIEW = Number(data.workspace_limit ?? 2.2);
   const halfWidth = Number(data.link_half_width ?? 0.125);
-  const obstacleRadius = Number(data.obstacle_radius ?? 0.125);
-  const clearance2 = (halfWidth+obstacleRadius)**2;
+  // Filled, user-sized obstacles. Link geometry is a capsule of radius halfWidth.
+  function buildVertices(o) {
+    if (o.shape==='Circle') return [];
+    let w=o.width,h=o.shape==='Square'?o.width:o.height;
+    const local=o.shape==='Triangle'?[[-w/2,-h/3],[w/2,-h/3],[0,2*h/3]]:
+      [[-w/2,-h/2],[w/2,-h/2],[w/2,h/2],[-w/2,h/2]];
+    const t=o.rotation_deg*Math.PI/180,c=Math.cos(t),s=Math.sin(t);
+    return local.map(([x,y])=>[o.x+c*x-s*y,o.y+s*x+c*y]);
+  }
+  function toObstacle(p) {
+    const o=Array.isArray(p)?{x:Number(p[0]),y:Number(p[1]),shape:'Circle'}:{...p};
+    o.x=Number(o.x);o.y=Number(o.y);o.shape=o.shape||'Circle';
+    o.radius=Number(o.radius??.125);o.width=Number(o.width??.5);
+    o.height=Number(o.height??.5);o.rotation_deg=Number(o.rotation_deg??0);
+    o.vertices=buildVertices(o);return o;
+  }
   const state = {
     joints: data.joints.map(j=>({type:j.type, a:Number(j.a), theta:Number(j.theta),
                                  s:Number(j.s), stroke:Number(j.stroke)})),
-    obstacles: data.obstacles.map(p=>[Number(p[0]),Number(p[1])]),
+    obstacles: data.obstacles.map(toObstacle),
     axisX: Number(data.axis_x), axisY: Number(data.axis_y),
     quality: clamp(Number(data.quality),1,10),
     labels: Boolean(data.show_labels), arcs:Boolean(data.show_angle_arcs),
@@ -53,10 +68,43 @@ export default function(component) {
     const t=denom<1e-14?0:clamp(((px-ax)*vx+(py-ay)*vy)/denom,0,1);
     const dx=px-(ax+t*vx),dy=py-(ay+t*vy);return dx*dx+dy*dy;
   }
-  function hitLink(a,b){for(const o of state.obstacles)
-    if(segmentDistanceSquared(o[0],o[1],a[0],a[1],b[0],b[1])<clearance2)return true;
+  function orientation(ax,ay,bx,by,px,py) {
+    return (bx-ax)*(py-ay)-(by-ay)*(px-ax);
+  }
+  function segmentsIntersect(a,b,c,d) {
+    const u=orientation(...a,...b,...c),v=orientation(...a,...b,...d);
+    const w=orientation(...c,...d,...a),z=orientation(...c,...d,...b);
+    const eps=1e-12;
+    const opposites=(x,y)=>(x>=-eps&&y<=eps)||(x<=eps&&y>=-eps);
+    return opposites(u,v)&&opposites(w,z)&&
+      Math.max(Math.min(a[0],b[0]),Math.min(c[0],d[0]))<=
+      Math.min(Math.max(a[0],b[0]),Math.max(c[0],d[0]))+eps &&
+      Math.max(Math.min(a[1],b[1]),Math.min(c[1],d[1]))<=
+      Math.min(Math.max(a[1],b[1]),Math.max(c[1],d[1]))+eps;
+  }
+  function inPolygon(p,poly) {
+    for (let k=0;k<poly.length;k++) {
+      if(orientation(...poly[k],...poly[(k+1)%poly.length],...p)<-1e-12)return false;
+    }
+    return true;
+  }
+  function linkHitsObstacle(a,b,o){
+    if(o.shape==='Circle'){
+      return segmentDistanceSquared(o.x,o.y,...a,...b)<(halfWidth+o.radius)**2;
+    }
+    const vs=o.vertices;
+    if(inPolygon(a,vs)||inPolygon(b,vs))return true;
+    const tol2=halfWidth*halfWidth;
+    for(let k=0;k<vs.length;k++){
+      const c=vs[k],d=vs[(k+1)%vs.length];
+      if(segmentsIntersect(a,b,c,d))return true;
+      if(segmentDistanceSquared(...a,...c,...d)<tol2 ||
+         segmentDistanceSquared(...b,...c,...d)<tol2 ||
+         segmentDistanceSquared(...c,...a,...b)<tol2)return true;
+    }
     return false;
   }
+  function hitLink(a,b){return state.obstacles.some(o=>linkHitsObstacle(a,b,o));}
   function inCollision(pose){for(let i=0;i<state.joints.length;i++)
       if(hitLink(pose.points[i],pose.points[i+1]))return true;
       return false;
@@ -111,13 +159,19 @@ export default function(component) {
       ticks.map(n=>({label:String(+n.toPrecision(5)),pixel:workspacePixel(0,n,g).y})),'x','y');
     const scale=g.size/(2*MAX_VIEW),pose=getPose();
     for(let i=0;i<state.obstacles.length;i++){
-      const o=state.obstacles[i],p=workspacePixel(o[0],o[1],g);
-      c.beginPath();c.arc(p.x,p.y,Math.max(.1,obstacleRadius*scale),0,TAU);
+      const o=state.obstacles[i],p=workspacePixel(o.x,o.y,g);
+      c.beginPath();
+      if(o.shape==='Circle')c.arc(p.x,p.y,Math.max(.1,o.radius*scale),0,TAU);
+      else{
+        o.vertices.forEach((v,k)=>{
+          const q=workspacePixel(...v,g);if(k===0)c.moveTo(q.x,q.y);else c.lineTo(q.x,q.y);
+        });c.closePath();
+      }
       c.fillStyle='rgba(249,115,22,.45)';c.fill();c.lineWidth=2.5;c.strokeStyle=colors.orange;c.stroke();
-      // Constant-size center dot preserves usability even on large plots.
+      // The center dot is draggable even if the obstacle is tiny at current zoom.
       c.beginPath();c.arc(p.x,p.y,4,0,TAU);c.fillStyle=colors.orange;c.fill();
       if(state.labels){c.fillStyle=colors.orange;c.font='600 12px sans-serif';c.textAlign='center';
-        c.fillText('O'+(i+1),p.x,p.y-10-Math.min(15,obstacleRadius*scale));}
+        c.fillText('O'+(i+1)+' · '+o.shape,p.x,p.y-10);}
     }
     for(let i=0;i<state.joints.length;i++){
       const a=workspacePixel(...pose.points[i],g),b=workspacePixel(...pose.points[i+1],g);
@@ -182,7 +236,7 @@ export default function(component) {
         heading+=theta;
         const nx=x+(joint.a+s)*Math.cos(heading),ny=y+(joint.a+s)*Math.sin(heading);
         for(const o of state.obstacles){
-          if(segmentDistanceSquared(o[0],o[1],x,y,nx,ny)<clearance2){collide=true;break;}
+          if(linkHitsObstacle([x,y],[nx,ny],o)){collide=true;break;}
         }
         x=nx;y=ny;if(collide)break;
       }
@@ -201,7 +255,7 @@ export default function(component) {
     computeCspace(32*state.quality,false);drawCspace();
   }
   function emit(kind){setStateValue('event',{
-    kind,values:variables().map(Number),obstacles:state.obstacles.map(p=>p.map(Number)),
+    kind,values:variables().map(Number),obstacles:state.obstacles.map(o=>[Number(o.x),Number(o.y)]),
     nonce:Date.now()+Math.random(),
   });}
   function position(e,canvas){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};}
@@ -217,9 +271,11 @@ export default function(component) {
     for(let i=pose.points.length-2;i>=1;i--){
       candidate('joint',i-1,workspacePixel(...pose.points[i],g),16);
     }
-    const hitRadius=Math.max(14,obstacleRadius*g.size/(2*MAX_VIEW)+5);
     for(let i=0;i<state.obstacles.length;i++){
-      candidate('obstacle',i,workspacePixel(...state.obstacles[i],g),hitRadius);
+      const o=state.obstacles[i];
+      const radius=o.shape==='Circle'?o.radius:Math.hypot(o.width,o.shape==='Square'?o.width:o.height)/2;
+      const hitRadius=Math.max(14,radius*g.size/(2*MAX_VIEW)+5);
+      candidate('obstacle',i,workspacePixel(o.x,o.y,g),hitRadius);
     }
     return best;
   }
@@ -294,7 +350,9 @@ export default function(component) {
     const drag=state.drag;if(!drag||drag.id!==e.pointerId||!state.wGeom)return;
     e.preventDefault();const pos=position(e,workspaceCanvas),p=workspacePoint(pos.x,pos.y,state.wGeom);
     if(drag.kind==='obstacle'){
-      state.obstacles[drag.index]=[clamp(p.x,-MAX_VIEW,MAX_VIEW),clamp(p.y,-MAX_VIEW,MAX_VIEW)];
+      const o=state.obstacles[drag.index];
+      o.x=clamp(p.x,-MAX_VIEW,MAX_VIEW);o.y=clamp(p.y,-MAX_VIEW,MAX_VIEW);
+      o.vertices=buildVertices(o);
       drawWorkspace();recalcPreview();
     }else if(drag.kind==='joint'){
       moveJoint(drag.index,p.x,p.y);drawWorkspace();drawCspace();
@@ -350,3 +408,4 @@ export default function(component) {
   parentElement.__rmCleanup=cleanup;
   return cleanup;
 }
+

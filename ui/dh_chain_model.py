@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from math import radians
 from typing import Sequence
 import numpy as np
+from ui.obstacle_geometry import parse_obstacles, segment_obstacle_gap, obstacle_gaps, Obstacle
 
 LINK_HALF_WIDTH = 0.125
 OBSTACLE_RADIUS = 0.125
@@ -130,9 +131,7 @@ def configuration_slice(joints: Sequence[PlanarJoint], obstacles: Sequence[Seque
         raise ValueError("Select two different existing joint indices")
     if isinstance(resolution, bool) or not isinstance(resolution, (int, np.integer)) or not 8 <= resolution <= 320:
         raise ValueError("Resolution must be integer 8–320")
-    obs = np.asarray(obstacles, dtype=float)
-    if obs.ndim != 2 or obs.shape[1] != 2 or obs.shape[0] == 0 or not np.isfinite(obs).all():
-        raise ValueError("Obstacles must contain finite coordinate pairs")
+    obs = parse_obstacles(obstacles)
 
     def samples(index):
         end = 360.0 if joints[index].kind == "R" else joints[index].stroke
@@ -145,7 +144,6 @@ def configuration_slice(joints: Sequence[PlanarJoint], obstacles: Sequence[Seque
     heading = np.zeros_like(xx)
     prev_x = np.zeros_like(xx)
     prev_y = np.zeros_like(xx)
-    clear2 = COLLISION_CLEARANCE**2
     for i, joint in enumerate(joints):
         theta = xx if i == axis_a and joint.kind == "R" else yy if i == axis_b and joint.kind == "R" else joint.theta_deg
         ext = xx if i == axis_a and joint.kind == "P" else yy if i == axis_b and joint.kind == "P" else joint.extension
@@ -155,9 +153,8 @@ def configuration_slice(joints: Sequence[PlanarJoint], obstacles: Sequence[Seque
         curr_y = prev_y + length * np.sin(heading)
         dx, dy = curr_x-prev_x, curr_y-prev_y
         sq = np.maximum(dx*dx+dy*dy, 1e-15)
-        for ox, oy in obs:
-            t = np.clip(((ox-prev_x)*dx+(oy-prev_y)*dy)/sq, 0, 1)
-            blocked |= ((ox-(prev_x+t*dx))**2+(oy-(prev_y+t*dy))**2 < clear2)
+        for obstacle in obs:
+            blocked |= (segment_obstacle_gap(prev_x,prev_y,curr_x,curr_y,obstacle,LINK_HALF_WIDTH) < 0)
         prev_x, prev_y = curr_x, curr_y
     return xs, ys, blocked
 

@@ -1,239 +1,110 @@
-"""Help and reference page for Robot Motion with Obstacles."""
-
+"""Help page for original demonstration and expanded, planar DH Editor."""
 from __future__ import annotations
-
 from collections.abc import Callable
-
 import streamlit as st
 
-
 NavigationCallback = Callable[[str], None]
-
 SOURCE_URL = "https://demonstrations.wolfram.com/RobotMotionWithObstacles/"
 
 
-GLOSSARY = {
-    "Workspace": (
-        "The Cartesian x-y plane containing the robot arm and circular obstacles."
-    ),
-    "Configuration Space (C-space)": (
-        "A space whose coordinates are the robot joint variables. Here the axes "
-        "are θ₁ and θ₂, and each point represents one complete robot pose."
-    ),
-    "Collision Cell": (
-        "A sampled C-space configuration in which at least one robot link "
-        "intersects an obstacle."
-    ),
-    "Forward Kinematics": (
-        "The calculation used to determine the elbow and end-effector positions "
-        "from θ₁ and θ₂."
-    ),
-    "Inverse Kinematics": (
-        "The calculation used to determine joint angles from a desired "
-        "end-effector position."
-    ),
-    "Quality (Q)": (
-        "The configuration-space sampling setting. The final map uses 32Q "
-        "samples along each angular axis."
-    ),
-    "Periodic Angles": (
-        "Joint angles repeat every 2π radians, so 0° and 360° describe the "
-        "same physical orientation."
-    ),
-}
-
-
-FAQS = [
-    {
-        "question": "What does this application show?",
-        "answer": (
-            "It models a two-link planar robot arm moving around two circular "
-            "obstacles. The workspace shows the physical robot pose, while the "
-            "configuration-space plot shows which combinations of θ₁ and θ₂ "
-            "produce collisions."
-        ),
-    },
-    {
-        "question": "Can I manipulate the robot directly?",
-        "answer": (
-            "Yes. Drag either orange obstacle, the blue elbow handle, or the "
-            "purple end-effector handle in the workspace. You can also click or "
-            "drag the red C-space crosshair to change θ₁ and θ₂."
-        ),
-    },
-    {
-        "question": "Why does obstacle dragging feel faster than a normal Streamlit update?",
-        "answer": (
-            "The workspace and C-space preview update locally in the browser "
-            "during the drag. The final state is synchronized back to Python "
-            "when you release the pointer."
-        ),
-    },
-    {
-        "question": "What happens when I drag the end effector?",
-        "answer": (
-            "The browser solves the two-link inverse-kinematics problem and "
-            "selects the solution closest to the robot's current pose. Targets "
-            "outside the reachable workspace are projected onto the nearest "
-            "reachable boundary."
-        ),
-    },
-    {
-        "question": "What do the dark regions in configuration space mean?",
-        "answer": (
-            "Dark cells represent sampled joint configurations where at least "
-            "one robot link intersects an obstacle. Light cells are sampled "
-            "collision-free configurations."
-        ),
-    },
-    {
-        "question": "What does Q change?",
-        "answer": (
-            "Q controls the C-space sampling density. While an obstacle is being "
-            "dragged, the live preview uses 8Q samples per axis. When the drag "
-            "ends, the final map uses 32Q samples per axis."
-        ),
-    },
-]
-
-
 def display_help_page(navigate: NavigationCallback | None = None) -> None:
-    """Render usage help and robotics reference information."""
     st.title("Help & Reference")
-    st.caption("Using Robot Motion with Obstacles")
-
+    st.caption("Robot Motion with Obstacles · Demonstration and DH Editor")
     if navigate is not None:
-        home_col, demo_col, _ = st.columns([1, 1.2, 3.5])
-
-        with home_col:
-            if st.button("← Home", use_container_width=True):
+        a, b, c = st.columns([1, 1, 3])
+        with a:
+            if st.button("← Home", use_container_width=True, key="help_home"):
                 navigate("Home")
-
-        with demo_col:
-            if st.button(
-                "Open Demonstration",
-                type="primary",
-                use_container_width=True,
-            ):
+        with b:
+            if st.button("Demonstration", use_container_width=True, key="help_demo"):
                 navigate("Demonstration")
+        with c:
+            if st.button("Open DH Editor", type="primary", key="help_dh_editor"):
+                navigate("DH Editor")
 
     st.divider()
-
-    st.subheader("Using the Demonstration")
-
-    controls_col, plots_col = st.columns(2, gap="large")
-
-    with controls_col:
+    st.subheader("Two different modes")
+    left, right = st.columns(2, gap="large")
+    with left:
         with st.container(border=True):
-            st.markdown("### Controls")
-            st.markdown(
-                """
-1. Drag an **orange obstacle** to reposition it.
-2. Drag the **blue elbow handle** to change θ₁.
-3. Drag the **purple end-effector handle** to reposition the arm using inverse kinematics.
-4. Click or drag the **red C-space crosshair** to change θ₁ and θ₂ together.
-5. Use the sliders when you need exact values.
-6. Change **Q** to adjust configuration-space sampling resolution.
-7. Use the display toggles to show or hide workspace annotations.
-8. Use **Reset** to return to the default state.
-"""
-            )
-
-    with plots_col:
+            st.markdown("### Demonstration — original 2R robot")
+            st.write("A faithful two-link planar demonstration with fixed equal link lengths "
+                     "and two circular obstacles. Move the blue elbow, purple tool, orange "
+                     "obstacles, or red C-space crosshair. It is separate from the DH Editor.")
+    with right:
         with st.container(border=True):
-            st.markdown("### Reading the Plots")
-            st.markdown(
-                """
-- **Robot Workspace:** the arm and obstacles in Cartesian coordinates.
-- **Configuration Space:** joint-angle combinations mapped to collision state.
-- **Dark C-space cells:** sampled collision configurations.
-- **Light C-space cells:** sampled collision-free configurations.
-- **Red crosshair:** the robot's current configuration.
-"""
-            )
+            st.markdown("### DH Editor — extended planar robot")
+            st.write("Build a serial chain of 2–12 links, choose R or P for each joint, "
+                     "change link sizes, and explore joint-variable C-space slices. "
+                     "Obstacle shapes and dimensions can be customized here.")
 
-    st.divider()
-
-    st.subheader("Understanding the Model")
-
-    model_left, model_right = st.columns(2, gap="large")
-
-    with model_left:
-        with st.container(border=True):
-            st.markdown("### Robot Geometry")
-            st.write(
-                "The robot has two revolute links of equal length. The second "
-                "link angle is relative to the first, so the end-effector "
-                "position depends on both θ₁ and θ₂."
-            )
-
-            st.latex(r"x_1 = \cos(\theta_1)")
-            st.latex(r"y_1 = \sin(\theta_1)")
-            st.latex(r"x_2 = x_1 + \cos(\theta_1+\theta_2)")
-            st.latex(r"y_2 = y_1 + \sin(\theta_1+\theta_2)")
-
-    with model_right:
-        with st.container(border=True):
-            st.markdown("### Collision Checking")
-            st.write(
-                "Each obstacle is treated as a circle. A collision occurs when "
-                "an obstacle center comes within the combined obstacle radius and "
-                "link half-width of either robot link segment."
-            )
-
-            st.write(
-                "The C-space view repeats this collision test over a grid of "
-                "joint-angle pairs."
-            )
-
-    st.divider()
-
-    st.subheader("Original Demonstration")
-
+    st.subheader("Using the DH Editor")
     with st.container(border=True):
-        st.markdown(
-            """
-This application is based on **Robot Motion with Obstacles** by
-**Aaron T. Becker** and **Haoran Zhao**, published in the
-**Wolfram Demonstrations Project**.
-"""
-        )
+        st.markdown("""
+1. **Add or remove joints:** use **+ Add** / **− Last** above the editor table.
+2. **Choose joint type:** use **R** (revolute) or **P** (in-plane sliding) in the table.
+3. **Set the geometry:** `a` is the fixed link length; `θ (deg)` is the rotation/heading. For P, set `Stroke` and vary the in-plane extension `s`.
+4. **Choose the C-space axes:** the **Horizontal axis (X)** and **Vertical axis (Y)** menus can select *any two distinct joints*; the other joint variables remain at their currently entered values.
+5. **Manipulate graphically:** drag orange obstacles, blue intermediate joint handles, the purple tool, or the red C-space crosshair. Table and numerical values synchronize after a drag is released.
+6. **Customize obstacles:** choose Circle, Square, Rectangle, or Triangle in each obstacle control card; enter radius or side/width/height. Rotate polygons with *Rotation (degrees CCW)*.
+7. **Move beyond the original coordinates:** obstacle position fields accept larger coordinates and the viewport expands automatically. Increase *Minimum plot half-span* to drag farther in the plot.
+8. **Tune detail:** quality Q controls C-space sampling, with an 8Q preview while dragging obstacles and 32Q final grid; toggles control labels and angle arcs.
+9. **Reset:** returns the editor and obstacles to two unit-length revolute joints and the original circular obstacles.
+""")
 
-        st.link_button(
-            "Open the original Wolfram demonstration ↗",
-            SOURCE_URL,
-        )
+    st.subheader("Reading configuration-space slices")
+    st.write("The complete configuration space of an N-joint manipulator is N-dimensional. "
+             "The DH Editor therefore displays a **two-dimensional slice**, not a projection "
+             "of all reachable configurations. The selected variables form the axes; "
+             "every other joint is held fixed at its current table value.")
+    st.markdown("""
+- A **revolute (R) axis** runs from 0° to 360°.
+- A **prismatic (P) axis** runs from 0 to the joint's specified Stroke.
+- **Dark cells** represent sampled configurations in collision with at least one obstacle.
+- **Light cells** represent sampled collision-free configurations.
+- **Red crosshair** identifies the current values of the two selected joints; drag it to change them.
+""")
+
+    st.subheader("Mathematical conventions")
+    col1, col2 = st.columns(2, gap="large")
+    with col1:
+        with st.container(border=True):
+            st.markdown("#### Forward kinematics")
+            st.latex(r"\phi_i=\sum_{k=1}^{i}\theta_k")
+            st.latex(r"\mathbf p_i=\mathbf p_{i-1}+(a_i+s_i)\begin{bmatrix}\cos\phi_i\\\sin\phi_i\end{bmatrix}")
+            st.write("For R joints, sᵢ is zero and θᵢ varies. For P joints, θᵢ is "
+                     "fixed while sᵢ varies within its configured stroke.")
+    with col2:
+        with st.container(border=True):
+            st.markdown("#### Important DH limitation")
+            st.write("Standard DH prismatic motion changes **d** along a local Z axis. "
+                     "This strictly 2D extension instead changes **s** along local X. "
+                     "Thus it is a DH-inspired planar joint model, not a complete "
+                     "3D DH implementation. d and α remain zero.")
+
+    st.subheader("Obstacle collision model")
+    st.write("Robot links are capsules of fixed half-width 0.125 units. Circles use their "
+             "specified radius. Squares, rectangles and triangles are treated as **filled polygons**, "
+             "including their rotation. A collision is detected when the link capsule "
+             "overlaps an obstacle. C-space uses the same shapes and dimensions. "
+             "A boundary is sampled, so very small obstacles may need a higher Q.")
+
+    with st.expander("Frequently asked questions"):
+        st.markdown("**Can I select θ₂ and θ₄ instead of θ₁ and θ₂?** Yes. Add enough "
+                    "revolute joints, then choose J2 and J4 in the two axis menus.")
+        st.markdown("**Can I use a prismatic axis?** Yes. It is plotted in extension units (s), "
+                    "not in degrees; the other axis can be another P or an R joint.")
+        st.markdown("**Does changing an obstacle size affect the collision map?** Yes. "
+                    "The collision checks use the selected filled shape and dimensions.")
+        st.markdown("**Why doesn't the tool always reach my mouse position?** Exact analytic "
+                    "IK is available for a two-revolute-joint chain. Other chains use an "
+                    "approximate numerical solver that can stop at local solutions or limits.")
+        st.markdown("**Why is the C-space map slow at high quality?** Each cell requires "
+                    "collision checking for all links and obstacle edges, and polygon shapes "
+                    "are more expensive than circles.")
 
     st.divider()
-
-    st.subheader("Frequently Asked Questions")
-
-    for item in FAQS:
-        with st.expander(item["question"]):
-            st.write(item["answer"])
-
-    st.divider()
-
-    st.subheader("Glossary")
-    glossary_cols = st.columns(2)
-
-    for index, (term, definition) in enumerate(GLOSSARY.items()):
-        with glossary_cols[index % 2]:
-            with st.container(border=True):
-                st.markdown(f"**{term}**")
-                st.caption(definition)
-
-    st.divider()
-
-    st.subheader("Implementation Notes")
-
-    with st.expander("View technical notes", expanded=False):
-        st.markdown(
-            """
-- Workspace and C-space interaction run together in one browser component.
-- C-space crosshair motion updates the robot immediately without a Streamlit rerun.
-- Obstacle drags use an **8Q** live C-space preview and a **32Q** final map.
-- The committed state is synchronized back to Python after the drag ends.
-- The Python robot model remains available for diagnostics and independent calculations.
-"""
-        )
+    st.subheader("Original Mathematica demonstration")
+    st.write("Based on *Robot Motion with Obstacles* by Aaron T. Becker and Haoran Zhao "
+             "in the Wolfram Demonstrations Project.")
+    st.link_button("View the source demonstration", SOURCE_URL)

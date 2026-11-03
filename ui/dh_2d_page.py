@@ -14,6 +14,7 @@ from ui.dh_chain_model import (
     OBSTACLE_RADIUS, rows_to_joints, forward_chain, collision_distances,
 )
 from ui.dh_interactive_plot import render_interactive_dh_system
+from ui.obstacle_geometry import Obstacle, SHAPES, parse_obstacles, obstacle_gaps
 
 EDITOR_KEY = "dh2d_grid_editor"
 COMPONENT_KEY = "dh2d_fast_robot_interaction"
@@ -31,6 +32,11 @@ def _initial_state() -> None:
         "dh2d_rows": [_new_row(1), _new_row(2)],
         "dh2d_o1x": 1.1, "dh2d_o1y": 1.1,
         "dh2d_o2x": 1.1, "dh2d_o2y": -1.1,
+        "dh2d_o1_shape": "Circle", "dh2d_o2_shape": "Circle",
+        "dh2d_o1_radius": .125, "dh2d_o2_radius": .125,
+        "dh2d_o1_width": .5, "dh2d_o2_width": .5,
+        "dh2d_o1_height": .5, "dh2d_o2_height": .5,
+        "dh2d_o1_rotation": 0., "dh2d_o2_rotation": 0.,
         "dh2d_quality": 2,
         "dh2d_show_angle_arcs": True,
         "dh2d_show_labels": True,
@@ -185,20 +191,48 @@ def _joint_controls(joints: tuple[PlanarJoint, ...]) -> None:
 
 
 def _obstacle_controls(n: int) -> None:
+    """Controls for editable filled obstacles, including their rotation."""
+    prefix = f"dh2d_o{n}"
     with st.container(border=True):
-        st.markdown(f"### ⭕ Obstacle {n}")
+        st.markdown(f"### 🟠 Obstacle {n}")
+        shape = st.selectbox("Shape", options=SHAPES, key=f"{prefix}_shape")
         c1, c2 = st.columns(2)
         with c1:
-            st.number_input("X position", step=.25, format="%.2f", key=f"dh2d_o{n}x")
+            st.number_input("X position", step=.25, format="%.2f", key=f"{prefix}x")
         with c2:
-            st.number_input("Y position", step=.25, format="%.2f", key=f"dh2d_o{n}y")
-        st.caption("No ±2 coordinate limit. The viewport fits both obstacles.")
+            st.number_input("Y position", step=.25, format="%.2f", key=f"{prefix}y")
+        if shape == "Circle":
+            st.number_input("Radius", min_value=.001, max_value=10000., step=.125,
+                            format="%.3f", key=f"{prefix}_radius")
+        else:
+            st.number_input("Side length" if shape == "Square" else "Width / base",
+                            min_value=.001, max_value=10000., step=.25,
+                            format="%.3f", key=f"{prefix}_width")
+            if shape != "Square":
+                st.number_input("Height", min_value=.001, max_value=10000., step=.25,
+                                format="%.3f", key=f"{prefix}_height")
+            st.number_input("Rotation (degrees CCW)", step=15., format="%.1f",
+                            key=f"{prefix}_rotation")
+        st.caption("Drag the orange shape by its center; edit dimensions here."
+                   " The workspace scales to include its full extent.")
+
+
+def _current_obstacles() -> tuple[Obstacle, Obstacle]:
+    return tuple(Obstacle(
+        x=float(st.session_state[f"dh2d_o{n}x"]),
+        y=float(st.session_state[f"dh2d_o{n}y"]),
+        shape=str(st.session_state[f"dh2d_o{n}_shape"]),
+        radius=float(st.session_state[f"dh2d_o{n}_radius"]),
+        width=float(st.session_state[f"dh2d_o{n}_width"]),
+        height=float(st.session_state[f"dh2d_o{n}_height"]),
+        rotation_deg=float(st.session_state[f"dh2d_o{n}_rotation"]),
+    ) for n in (1, 2))
 
 
 def _diagnostics(joints: tuple[PlanarJoint, ...], obstacles) -> None:
     pose = forward_chain(joints)
-    dist = collision_distances(pose, obstacles)
-    collision = bool(np.any(dist < COLLISION_CLEARANCE))
+    gaps = obstacle_gaps(pose.points, obstacles, LINK_HALF_WIDTH)
+    collision = bool(np.any(gaps < 0))
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Robot state", "COLLISION" if collision else "Collision-free")
     c2.metric("Tool (x, y)", f"({pose.end_effector[0]:.2f}, {pose.end_effector[1]:.2f})")
@@ -208,11 +242,13 @@ def _diagnostics(joints: tuple[PlanarJoint, ...], obstacles) -> None:
         st.dataframe(pd.DataFrame([{"Point": i, "x": float(p[0]), "y": float(p[1])}
                                      for i,p in enumerate(pose.points)]), hide_index=True)
         st.dataframe(pd.DataFrame([
-            {"Link": i+1, "Obstacle": k+1, "Centerline distance": float(dist[i,k]),
-             "Colliding": bool(dist[i,k] < COLLISION_CLEARANCE)}
+            {"Link": i+1, "Obstacle": k+1, "Shape": obstacles[k].shape,
+             "Signed clearance": float(gaps[i,k]), "Colliding": bool(gaps[i,k] < 0)}
             for i in range(len(joints)) for k in range(2)
         ]), hide_index=True)
-        st.write(f"Collision threshold = {LINK_HALF_WIDTH:.3f} + {OBSTACLE_RADIUS:.3f} = {COLLISION_CLEARANCE:.3f} units")
+        st.caption("Negative signed clearance means the link overlaps the filled obstacle. "
+                   "The link has half-width 0.125 units. For circles, the radius is included "
+                   "in the clearance. Polygons use segment-to-filled-polygon distance.")
         st.markdown("**Base-to-tool homogeneous transform (4 × 4)**")
         st.dataframe(pd.DataFrame(pose.transforms[-1]).round(6), hide_index=True)
 
@@ -230,32 +266,35 @@ def display_dh_2d_page() -> None:
     if st.session_state["dh2d_axis_x"] == st.session_state["dh2d_axis_y"]:
         st.session_state["dh2d_axis_y"] = (st.session_state["dh2d_axis_x"] + 1) % n
 
-    with st.expander("C-space slice and viewport settings", expanded=False):
-        xcol, ycol, span_col, qcol = st.columns(4)
-        with xcol:
-            st.selectbox("Horizontal joint", options=list(range(n)), key="dh2d_axis_x",
-                         format_func=lambda i: f"J{i+1} ({joints[i].kind})")
-        with ycol:
-            st.selectbox("Vertical joint", options=list(range(n)), key="dh2d_axis_y",
-                         format_func=lambda i: f"J{i+1} ({joints[i].kind})")
+    st.subheader("Configuration-space axis selection")
+    st.caption("Pick ANY two joints as the horizontal and vertical variables. "
+               "Other joints remain fixed at their current settings. "
+               "R joints vary θ (0–360°); P joints vary s (0–Stroke).")
+    xcol, ycol = st.columns(2)
+    with xcol:
+        st.selectbox("Horizontal axis (X)", options=list(range(n)), key="dh2d_axis_x",
+                     format_func=lambda i: f"J{i+1} — {'θ (revolute)' if joints[i].kind == 'R' else 's (prismatic)'}")
+    with ycol:
+        st.selectbox("Vertical axis (Y)", options=list(range(n)), key="dh2d_axis_y",
+                     format_func=lambda i: f"J{i+1} — {'θ (revolute)' if joints[i].kind == 'R' else 's (prismatic)'}")
+    with st.expander("Viewport and C-space resolution settings", expanded=False):
+        qcol, span_col = st.columns(2)
+        with qcol:
+            st.slider("C-space quality Q", 1, 10, key="dh2d_quality")
         with span_col:
             st.number_input("Minimum plot half-span", min_value=2.2, step=1.,
                             key="dh2d_min_view", help="Increase to drag obstacles farther away.")
-        with qcol:
-            st.slider("C-space quality Q", 1, 10, key="dh2d_quality")
-        st.caption("C-space varies only the selected two joints. The other joints "
-                   "stay at the values in the editor. R axes cover 0–360°; P axes cover 0–Stroke.")
+        st.caption("The map uses 8Q × 8Q preview cells while obstacles move and "
+                   "32Q × 32Q cells after release. Non-circular shapes and long chains "
+                   "may make high Q settings slower.")
     ax_x, ax_y = st.session_state["dh2d_axis_x"], st.session_state["dh2d_axis_y"]
     if ax_x == ax_y:
-        st.warning("Select different horizontal and vertical joints to plot C-space.")
-        return
-    obstacles = (
-        (float(st.session_state["dh2d_o1x"]), float(st.session_state["dh2d_o1y"])),
-        (float(st.session_state["dh2d_o2x"]), float(st.session_state["dh2d_o2y"])),
-    )
+        st.warning("Choose two different joints for the C-space axes.")
+        st.stop()
+    obstacles = _current_obstacles()
     limit = max(2.2, float(st.session_state["dh2d_min_view"]),
                 sum(j.max_length for j in joints) + .35,
-                *(abs(v) + .5 for ob in obstacles for v in ob))
+                *(max(abs(ob.x),abs(ob.y)) + ob.extent + .5 for ob in obstacles))
     st.subheader("Interactive visualization")
     render_interactive_dh_system(
         joints=joints, obstacles=obstacles, axis_x=ax_x, axis_y=ax_y,
@@ -263,8 +302,8 @@ def display_dh_2d_page() -> None:
         show_angle_arcs=bool(st.session_state["dh2d_show_angle_arcs"]),
         show_labels=bool(st.session_state["dh2d_show_labels"]), key=COMPONENT_KEY,
     )
-    st.caption("Drag obstacles, blue intermediate joints, purple tool, or the red C-space crosshair. "
-               "Obstacle moves use an 8Q preview; final map uses 32Q. "
+    st.caption("Drag orange obstacles, blue joint handles, the purple tool, or the red C-space crosshair. "
+               "Use the obstacle controls below to change shape, size, or rotation. "
                "Numerical IK for 3+ or mixed joints is approximate.")
     st.subheader("Controls")
     _joint_controls(joints)
